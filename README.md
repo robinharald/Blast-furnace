@@ -1,106 +1,175 @@
 # OSRS Blast Furnace Bot
 
-A robust, plug-and-play bot for the Old School RuneScape Blast Furnace minigame. Built on DreamBot with a clean state-machine architecture.
+A standalone, injection-free Blast Furnace bot for Old School RuneScape. No bot client needed — operates purely through screen reading and OS-level mouse/keyboard input.
+
+## How It Works
+
+This bot does **not** modify or inject into the game client. It:
+
+1. **Reads pixels** on your screen to understand game state (bank open, inventory contents, bar dispenser status)
+2. **Moves the mouse** using the WindMouse algorithm — a mathematically human-like curve with wind deviation, gravity pull, and variable speed
+3. **Clicks** with gaussian-distributed positional variance (never clicks the exact same pixel twice)
+4. **Times actions** with fatigue simulation — gradually slows down over the session, takes micro-breaks, varies all delays
+
+Nothing to detect on the client side. No signatures. No known bot client.
 
 ## Supported Bar Types
 
-| Bar | Primary Ore | Coal (at BF) | Smithing Lvl |
-|-----|-------------|--------------|--------------|
-| Bronze | Copper + Tin | 0 | 1 |
-| Iron | Iron ore | 0 | 15 |
-| Silver | Silver ore | 0 | 20 |
-| Steel | Iron ore | 1 | 30 |
-| Gold | Gold ore | 0 | 40 |
-| Mithril | Mithril ore | 2 | 50 |
-| Adamantite | Adamantite ore | 3 | 70 |
-| Runite | Runite ore | 4 | 85 |
+| Bar | Primary Ore | Coal (BF halved) | Smithing Lvl | XP/Bar |
+|-----|-------------|-------------------|------------|--------|
+| Bronze | Copper + Tin | 0 | 1 | 6.2 |
+| Iron | Iron ore | 0 | 15 | 12.5 |
+| Silver | Silver ore | 0 | 20 | 13.7 |
+| Steel | Iron ore | 1 | 30 | 17.5 |
+| Gold | Gold ore | 0 | 40 | 22.5 / 56.2* |
+| Mithril | Mithril ore | 2 | 50 | 30.0 |
+| Adamantite | Adamantite ore | 3 | 70 | 37.5 |
+| Runite | Runite ore | 4 | 85 | 50.0 |
 
-## Features
-
-- **All bar types** supported with intelligent trip cycling
-- **Coal bag** kept in a locked inventory slot (never deposited)
-- **Goldsmith gauntlets** auto-equipped for gold ore, swapped to ice gloves for collection
-- **Stamina potion** management with auto-drinking and 1-dose withdrawal
-- **Anti-pattern** behaviors: random camera moves, tab checks, idle pauses
-- **Live paint overlay** showing bars/hr, XP/hr, trips, runtime
-- **Configuration GUI** to select bar type and toggle all options before starting
-- **State machine** architecture for reliability and easy debugging
-
-## Prerequisites
-
-1. **Quest**: Started "The Giant Dwarf" (for Keldagrim access)
-2. **Location**: Standing at the Blast Furnace in Keldagrim on a BF world (352, 355, 358, 386, 387)
-3. **Coffer**: Gold coins deposited in the coffer before starting (72,000 GP/hr)
-4. **Bank contents**:
-   - Ores for your selected bar type
-   - Coal (if smelting steel/mithril/adamantite/runite)
-   - Stamina potions (1-dose recommended)
-   - Ice gloves and/or Goldsmith gauntlets
-5. **Inventory**: Coal bag (will be locked in slot 0 by default)
-6. **Equipment**: Graceful outfit recommended for weight reduction
+*56.2 XP with Goldsmith Gauntlets
 
 ## Setup
 
-### Build
+### Install Dependencies
 
 ```bash
-mvn clean package
+pip install -r requirements.txt
 ```
 
-### Install
+Requirements: `pyautogui`, `Pillow`, `mss`, `numpy`, `keyboard`
 
-Copy the compiled JAR from `target/blast-furnace-bot-1.0.0.jar` into your DreamBot scripts folder:
-- **Windows**: `C:\Users\<you>\DreamBot\Scripts\`
-- **macOS**: `~/DreamBot/Scripts/`
-- **Linux**: `~/DreamBot/Scripts/`
+### First Run — Calibration
+
+```bash
+python main.py
+```
+
+On first run (or with `--calibrate`), the setup wizard walks you through clicking key positions on your game screen:
+
+1. **Game viewport** corners
+2. **Inventory** first and last slot centers
+3. **Minimap** center
+4. **Bank chest**, **conveyor belt**, **bar dispenser** positions
+5. **Minimap navigation** points for walking between locations
+6. **Bank interface** buttons (deposit, search, close)
+7. **Bar collection widget** button
+
+Positions are saved to `calibration.json` — you only recalibrate if you resize or move the client.
+
+### Before Starting
+
+1. OSRS client open and logged in
+2. Standing at the Blast Furnace in Keldagrim (World 352/355/358/386/387)
+3. **Gold deposited in the coffer** (72,000 GP/hr for dwarven workers)
+4. Ores and coal in your bank
+5. Coal bag in your inventory (if using — it stays in a locked slot)
+6. Ice gloves / Goldsmith gauntlets in bank or equipped
+7. Stamina potions in bank (optional)
 
 ### Run
 
-1. Launch DreamBot and log into OSRS
-2. Travel to the Blast Furnace in Keldagrim
-3. Deposit coins in the coffer
-4. Ensure coal bag is in your inventory
-5. Start the "Blast Furnace Bot" script from DreamBot's script panel
-6. Select your bar type and options in the configuration GUI
-7. Click "Start"
+```bash
+python main.py              # Normal start
+python main.py --calibrate  # Force recalibration
+python main.py --help       # Show help
+```
+
+The bot will ask you to:
+- Select bar type
+- Toggle coal bag (with slot selection)
+- Toggle stamina potions (on/off)
+- Toggle goldsmith gauntlets (gold only)
+- Toggle ice gloves
+- Set emergency stop key (default: F6)
+
+Press **F6** (or your chosen key) at any time to stop.
 
 ## Architecture
 
 ```
-com.blastfurnace/
-├── BlastFurnaceBot.java      # Main script entry point & state machine
-├── core/
-│   ├── BarType.java           # Enum of all bar types with ore/coal/XP data
-│   ├── BotConfig.java         # Session configuration & item/object IDs
-│   └── BotState.java          # State machine states
-├── handlers/
-│   ├── BankingHandler.java    # Banking, withdrawals, trip cycling
-│   ├── CoalBagHandler.java    # Coal bag fill/empty, locked slot protection
-│   └── FurnaceHandler.java    # Conveyor belt, bar dispenser, glove swapping
-├── ui/
-│   ├── ConfigGUI.java         # Pre-start configuration window
-│   ├── PaintOverlay.java      # On-screen stats rendering
-│   └── StatsTracker.java      # Session statistics tracking
-└── utils/
-    ├── AntiPattern.java       # Human-like behavior simulation
-    └── SleepUtils.java        # Randomized delay utilities
+blast_furnace/
+├── main.py                     # Entry point
+├── config.py                   # Screen regions, colors, settings
+├── requirements.txt
+├── bot/
+│   ├── state_machine.py        # Core state machine with validation
+│   ├── states.py               # State enum
+│   └── session.py              # Statistics tracking
+├── input/
+│   └── mouse.py                # WindMouse human-like movement
+├── screen/
+│   └── capture.py              # Screenshot + pixel/color detection
+├── game/
+│   ├── inventory.py            # Inventory slot reading
+│   ├── coal_bag.py             # Coal bag with locked slot
+│   ├── bank.py                 # Bank open/deposit/withdraw/search
+│   └── furnace.py              # Conveyor, dispenser, glove swapping
+├── data/
+│   └── bars.py                 # All bar types and ore definitions
+├── anti_detect/
+│   └── humanizer.py            # Fatigue, timing, micro-breaks
+└── ui/
+    └── setup_wizard.py         # Screen calibration wizard
 ```
 
-## Trip Cycle Logic
+## State Machine
 
-For bars requiring coal, the bot uses an intelligent trip cycle:
+```
+BANKING → WALKING_TO_CONVEYOR → DEPOSITING_ORE
+                                        │
+                              ┌─────────┴──────────┐
+                              │                    │
+                         (coal-only trip)     (ore trip)
+                              │                    │
+                        WALKING_TO_BANK    WALKING_TO_DISPENSER
+                              │                    │
+                           BANKING         WAITING_FOR_BARS
+                                                   │
+                                           COLLECTING_BARS
+                                                   │
+                                           WALKING_TO_BANK
+                                                   │
+                                               BANKING
+```
 
-- **Steel (1 coal/bar)**: Fill coal bag → deposit coal + ore each trip
-- **Mithril (2 coal/bar)**: 1 coal trip (bag + inventory) → 1 ore trip (bag coal + ore)
-- **Adamantite (3 coal/bar)**: 2 coal trips → 1 ore trip
-- **Runite (4 coal/bar)**: 3 coal trips → 1 ore trip
+Every state:
+- **Validates preconditions** before acting
+- **Retries up to 3 times** on failure
+- **Verifies results** after each action
+- **Falls back to BANKING** on unrecoverable errors
+- **Stops after 10 consecutive errors** (safety net)
 
-The coal bag is filled every trip regardless, maximizing coal throughput.
+## Coal Trip Cycling
 
-## Notes
+For bars requiring coal, the bot alternates between coal and ore trips:
 
-- The bot auto-stops when supplies run out
-- Session summary is logged on exit
-- Smithing level 60+ avoids the 2,500 GP/10 min Foreman fee
-- For best XP rates, use Gold with Goldsmith Gauntlets (~370-400K XP/hr)
-- For best profit, use Runite bars (~1-3M GP/hr depending on GE prices)
+| Bar | Coal/Bar | Trip Pattern (with coal bag) |
+|-----|----------|------------------------------|
+| Steel | 1 | Every trip: coal bag + ore |
+| Mithril | 2 | Trip 1: coal bag + coal → Trip 2: coal bag + ore |
+| Adamantite | 3 | Trips 1-2: coal bag + coal → Trip 3: coal bag + ore |
+| Runite | 4 | Trips 1-3: coal bag + coal → Trip 4: coal bag + ore |
+
+The coal bag is filled every trip regardless, maximizing throughput.
+
+## Anti-Detection Features
+
+### WindMouse Movement
+- No straight-line paths — uses wind force + gravity physics
+- Variable speed: fast in the middle, slow at start/end
+- Distance-adaptive parameters (gentle for short moves, aggressive for long)
+- Positional jitter on every click (gaussian distribution)
+
+### Session Humanization
+- **Fatigue simulation**: reactions slow by ~5% per hour (logarithmic)
+- **Per-session personality**: randomized base speed, patience, precision
+- **Micro-breaks**: 1-5 second pauses at random intervals
+- **Long breaks**: 30-120 second AFK every 15-30 minutes
+- **Mouse drift**: occasional idle mouse movements to neutral areas
+- **Pre/post click delays**: simulates finger press and release timing
+
+### No Signatures
+- No game client modification or injection
+- No known bot client frameworks
+- No detectable driver hooks
+- Pure screen pixel reading + standard OS input APIs

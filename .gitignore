@@ -1,19 +1,23 @@
 # Maven
 target/
 pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-pom.xml.next
-release.properties
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+env/
+.venv/
 
 # IDE
 .idea/
 *.iml
-*.iws
-*.ipr
-.project
-.classpath
-.settings/
 .vscode/
 *.swp
 *.swo
@@ -23,11 +27,9 @@ release.properties
 .DS_Store
 Thumbs.db
 
-# Build
-*.class
-*.jar
-*.war
-*.ear
+# Config (user-specific calibration)
+calibration.json
 
 # Logs
 *.log
+logs/
