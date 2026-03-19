@@ -139,18 +139,29 @@ Every state:
 - **Falls back to BANKING** on unrecoverable errors
 - **Stops after 10 consecutive errors** (safety net)
 
+Key mechanical invariants enforced:
+- Coal is ALWAYS deposited before ore (prevents wrong bars like iron instead of steel)
+- The bar dispenser is NOT clicked until bars are ready (untargetable before smelting completes)
+- SPACE is pressed to confirm bar collection from the dispenser interface
+- Ice gloves are equipped BEFORE clicking the dispenser (bars are hot)
+- Goldsmith gauntlets are equipped BEFORE depositing gold ore (XP is awarded on deposit)
+- Coal bag is emptied at the conveyor, not directly into the furnace
+- Run energy is checked and toggled on every bank trip
+
 ## Coal Trip Cycling
 
 For bars requiring coal, the bot alternates between coal and ore trips:
 
 | Bar | Coal/Bar | Trip Pattern (with coal bag) |
 |-----|----------|------------------------------|
-| Steel | 1 | Every trip: coal bag + ore |
-| Mithril | 2 | Trip 1: coal bag + coal → Trip 2: coal bag + ore |
-| Adamantite | 3 | Trips 1-2: coal bag + coal → Trip 3: coal bag + ore |
-| Runite | 4 | Trips 1-3: coal bag + coal → Trip 4: coal bag + ore |
+| Steel | 1 | Every trip: 27 ore (inv) + 27 coal (bag) — always ore trip |
+| Mithril | 2 | 1 coal trip → 1 ore trip (coal bag filled both) |
+| Adamantite | 3 | 2 coal trips → 1 ore trip (coal bag filled all three) |
+| Runite | 4 | 3 coal trips → 1 ore trip (coal bag filled all four) |
 
-The coal bag is filled every trip regardless, maximizing throughput.
+The coal bag is filled every trip. Steel is a special case: since it only
+needs 1 coal per bar, the coal bag alone provides enough coal, so every
+trip carries ore in the inventory. Excess coal stays in the furnace (max 254).
 
 ## Anti-Detection Features
 
