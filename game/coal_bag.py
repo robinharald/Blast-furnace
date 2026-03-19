@@ -6,17 +6,16 @@ All banking operations must skip this slot.
 
 Key mechanics (from OSRS wiki):
 - Coal bag holds 27 coal (36 with Smithing cape)
-- In bank: LEFT-CLICK = "Fill" (fills bag from bank coal)
-- In bank: may need to right-click > "Empty" first if 1 coal residual
-- At conveyor: SHIFT-CLICK empties coal into inventory
-- At conveyor: then click conveyor belt to deposit the coal
+- In BANK (interface open): LEFT-CLICK = "Fill" (fills bag from bank coal)
+- In INVENTORY (bank closed): LEFT-CLICK = "Empty" (dumps coal to inventory)
+- The context (bank open vs closed) determines which action left-click performs
 - Quirk: bag holds 27 but inventory carries 27 ore (28 - bag slot),
   so after depositing at conveyor, 1 coal may remain in bag.
-  On next bank visit, need to empty that 1 coal before filling.
+  On next bank visit, the left-click while bank is open will still be "Fill"
+  if the bag is not completely full. Need to empty residual first, then fill.
 """
 
 import time
-import pyautogui
 from config import ScreenRegions
 from game.inventory import InventoryReader
 from input import mouse
@@ -81,11 +80,10 @@ class CoalBagManager:
 
     def empty_at_conveyor(self):
         """
-        Empty the coal bag at the conveyor belt area.
+        Empty the coal bag when NOT in the bank interface.
 
-        Uses SHIFT-CLICK on the coal bag to empty coal into inventory.
-        After emptying, the coal sits in inventory and must be deposited
-        on the conveyor with a separate conveyor click.
+        When the bank is closed, LEFT-CLICK on the coal bag = "Empty".
+        This dumps coal into inventory. Then click conveyor to deposit it.
 
         Returns True if bag was emptied.
         """
@@ -95,12 +93,8 @@ class CoalBagManager:
         x, y = self.regions.inv_slot_center(self.locked_slot)
         x, y = self.humanizer.jitter_position(x, y, radius=3)
 
-        # Hold shift and click to empty
-        pyautogui.keyDown("shift")
-        time.sleep(0.05)
-        mouse.click(x, y, variance=0)
-        time.sleep(0.05)
-        pyautogui.keyUp("shift")
+        # Left-click = "Empty" when bank is not open
+        mouse.click(x, y)
         self.humanizer.action_delay()
 
         # Brief wait for coal to appear in inventory

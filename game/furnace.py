@@ -6,17 +6,20 @@ Handles:
 - Emptying coal bag at conveyor (shift-click)
 - Walking between conveyor, dispenser, and bank via minimap
 - Detecting when bars are ready at the dispenser
-- Collecting bars (click dispenser "Take", then SPACE to confirm)
+- Collecting bars (click dispenser "Take", then click bar icon in widget)
 - Glove swapping (goldsmith gauntlets <-> ice gloves)
 
 Key Blast Furnace mechanics (from OSRS wiki):
 - Conveyor belt left-click: "Put-ore-on" deposits all ores from inventory
-- Coal bag: SHIFT-CLICK at conveyor empties coal into inventory, then click conveyor
-- Bar dispenser has 4 states: Empty, Pouring, Hot, Cooled
-  - "Take" option only in Hot and Cooled states
-  - Pouring state: NO interaction possible, must wait
-  - With ice gloves: click "Take" and bars go to inventory
-  - Without ice gloves: need bucket of water first
+- Coal bag: LEFT-CLICK at conveyor = "Empty" (dumps coal to inventory).
+  LEFT-CLICK in bank = "Fill". The context determines the action.
+- Bar dispenser states: Empty (nothing to take), Hot/Cooled (bars ready)
+  - The dispenser is always clickable, but returns nothing if empty
+  - "Take" left-click option collects bars when they exist
+  - With ice gloves: bars go directly to inventory (auto-cooled)
+  - Without ice gloves: need bucket of water to cool first
+  - The dispenser opens a collection widget — click the bar icon to take all
+  - The dispenser does NOT work while a dialogue box is open
 - Bars smelt ~2 ticks after ore hits the conveyor
 - ALL coal must be in furnace BEFORE primary ore for coal-requiring bars
 - Max 28 bars stored in dispenser at once
@@ -277,37 +280,39 @@ class FurnaceHandler:
         Collect bars from the bar dispenser.
 
         Flow:
-        1. Click dispenser ("Take")
-        2. If a confirmation dialogue appears, press SPACE to confirm
-        3. Bars transfer to inventory
+        1. Click dispenser (left-click = "Take")
+        2. A collection widget opens showing available bars
+        3. Click the bar icon in the widget to collect all bars
+        4. Bars transfer to inventory (auto-cooled with ice gloves)
 
-        With ice gloves equipped, bars go straight to inventory.
-        The SPACE press handles any dialogue that may appear.
+        Note: The dispenser does NOT work while a dialogue box is open.
+        There is no SPACE confirmation — it's a widget with clickable bar icons.
 
         Returns number of bars collected (0 if failed).
         """
         coal_bag_slot = self._get_coal_bag_slot()
         items_before = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
 
-        # Click dispenser
+        # Step 1: Click dispenser to open collection widget
         self.click_dispenser()
 
-        # Wait for interaction to process
+        # Step 2: Wait for the collection widget to appear
         time.sleep(0.8)
         self.humanizer.action_delay()
 
-        # Press SPACE to confirm any dialogue
-        pyautogui.press("space")
+        # Step 3: Click the bar icon in the collection widget
+        bx, by = self.regions.bar_collect_btn
+        mouse.click(bx, by, variance=3)
         self.humanizer.reaction_delay()
 
-        # Wait for bars to appear in inventory
+        # Step 4: Wait for bars to appear in inventory
         time.sleep(0.6)
         items_after = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
         collected = max(0, items_after - items_before)
 
-        # Fallback: if SPACE didn't work, try clicking the collect button
+        # Fallback: if first click didn't register, try again
         if collected == 0:
-            bx, by = self.regions.bar_collect_btn
+            self.humanizer.action_delay()
             mouse.click(bx, by, variance=3)
             self.humanizer.reaction_delay()
             time.sleep(0.5)

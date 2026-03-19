@@ -342,8 +342,8 @@ class BlastFurnaceStateMachine:
     def _handle_waiting_for_bars(self):
         """
         Wait for bars to finish smelting (first trip only).
-        The dispenser is in "Pouring" state and cannot be clicked.
-        Must wait until it transitions to "Hot" or "Cooled".
+        The dispenser is clickable but has no bars until smelting completes.
+        We wait, then attempt collection.
         """
         print(f"  [{self.stats.elapsed_formatted}] Waiting for bars to smelt...")
 
