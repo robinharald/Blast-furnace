@@ -1,33 +1,37 @@
 """
 Main bot state machine.
 
-Every state transition validates prerequisites before acting.
-Every click verifies its result before moving on.
-Robust error recovery with retry logic.
+Uses the "priming" pattern for maximum efficiency:
+- First trip: deposit ore, walk to dispenser, wait, collect (slow — primes the system)
+- All subsequent ore trips: collect PREVIOUS batch at dispenser first,
+  then walk to conveyor and deposit new ore. By the time we bank + return
+  to conveyor, the new batch is already done smelting.
 
-State flow:
+This eliminates smelting wait time on all trips after the first.
+
+Coal-only trips skip the dispenser entirely (no bars produced).
+
+State flow (after priming):
   BANKING → WALKING_TO_CONVEYOR → DEPOSITING_ORE
                                        │
                             ┌──────────┴───────────┐
                             │                      │
                        coal-only trip          ore trip
                             │                      │
-                      WALKING_TO_BANK    WALKING_TO_DISPENSER
+                      WALKING_TO_BANK    WALKING_TO_BANK
                             │                      │
-                         BANKING          WAITING_FOR_BARS
+                         BANKING               BANKING
                                                    │
-                                           COLLECTING_BARS
-                                                   │
-                                           WALKING_TO_BANK
-                                                   │
-                                               BANKING
+                                        (next ore trip starts with
+                                         collecting previous bars)
 
 Key invariants:
-- Coal MUST be in the furnace before ore for coal-requiring bars
-- The bar dispenser is only clickable when bars are ready
-- Coal bag is never banked (locked slot)
-- Goldsmith gauntlets must be equipped BEFORE depositing gold ore
-- Ice gloves must be equipped BEFORE clicking the bar dispenser
+- Coal MUST be in the furnace before ore (prevents wrong bars)
+- Bar dispenser only clickable in Hot/Cooled state (not Empty/Pouring)
+- Coal bag is never banked (locked slot, shift-click to empty at conveyor)
+- Goldsmith gauntlets equipped BEFORE depositing gold ore
+- Ice gloves equipped BEFORE clicking bar dispenser
+- First ore trip for coal bars must preload coal (no ore without coal)
 """
 
 import time
@@ -46,14 +50,7 @@ from data.bars import BarType
 
 class BlastFurnaceStateMachine:
     """
-    The core loop. Each state:
-    1. Validates preconditions
-    2. Performs the action with retries
-    3. Verifies the result
-    4. Transitions to the next state
-
-    Falls back to WALKING_TO_BANK on repeated failures.
-    Stops after MAX_CONSECUTIVE_ERRORS.
+    Core bot loop with priming pattern for maximum efficiency.
     """
 
     MAX_RETRIES = 3
@@ -83,7 +80,8 @@ class BlastFurnaceStateMachine:
 
         self.stats = SessionStats(
             settings.bar_type,
-            use_goldsmith=(settings.use_goldsmith_gauntlets and settings.bar_type == BarType.GOLD)
+            use_goldsmith=(settings.use_goldsmith_gauntlets
+                           and settings.bar_type == BarType.GOLD)
         )
 
         self.state = BotState.STARTING
@@ -94,18 +92,22 @@ class BlastFurnaceStateMachine:
         self._is_ore_trip = True
         self._items_withdrawn_count = 0
 
+        # Whether bars from a previous ore trip are sitting in the dispenser
+        self._bars_pending_collection = False
+
     def run(self):
-        """Main loop. Runs until stopped or fatal error."""
+        """Main loop."""
+        bar = self.settings.bar_type
         print(f"\n  Starting Blast Furnace Bot")
-        print(f"  Bar type: {self.settings.bar_type.data.name}")
-        coal_info = f"Yes (slot {self.settings.coal_bag_slot})" if self.settings.use_coal_bag else "No"
+        print(f"  Bar type: {bar.data.name}")
+        coal_info = (f"Yes (slot {self.settings.coal_bag_slot})"
+                     if self.settings.use_coal_bag else "No")
         print(f"  Coal bag: {coal_info}")
         print(f"  Stamina:  {'Yes' if self.settings.use_stamina else 'No'}")
         print(f"  Stop key: {self.settings.stop_key.upper()}")
         print(f"  Press {self.settings.stop_key.upper()} at any time to stop.\n")
 
         keyboard.on_press_key(self.settings.stop_key, lambda _: self.stop())
-
         self.state = BotState.BANKING
 
         while self._running and self.state != BotState.STOPPED:
@@ -118,11 +120,9 @@ class BlastFurnaceStateMachine:
                     self.state = BotState.STOPPED
                     break
 
-                # Anti-detection: occasional micro-breaks and mouse drift
                 self.humanizer.maybe_micro_break()
                 self.humanizer.maybe_mouse_drift()
 
-                # Periodic long AFK breaks
                 if self.humanizer.should_take_break():
                     print("  [BREAK] Taking a short break...")
                     self.stats.breaks_taken += 1
@@ -143,7 +143,7 @@ class BlastFurnaceStateMachine:
         print(self.stats.summary())
 
     def stop(self):
-        """Signal the bot to stop gracefully."""
+        """Signal graceful stop."""
         print("\n  [STOP] Stop key pressed. Finishing current action...")
         self._running = False
 
@@ -170,23 +170,60 @@ class BlastFurnaceStateMachine:
     def _handle_banking(self):
         """
         BANKING state:
-        1. Ensure run is enabled
-        2. Open bank
-        3. Check supplies exist
-        4. Deposit inventory (except coal bag)
-        5. Drink stamina if needed
-        6. Withdraw ores/coal for next trip
-        7. Close bank
-        8. Equip correct gloves
-        9. Transition to WALKING_TO_CONVEYOR
+        1. Ensure run is on
+        2. If bars are pending from previous ore trip, collect them FIRST
+           (walk to dispenser → collect → walk back to bank)
+        3. Open bank
+        4. Check supplies
+        5. Deposit inventory (bars + leftover items, except coal bag)
+        6. Drink stamina if needed
+        7. Withdraw ores/coal
+        8. Close bank
+        9. Equip gloves
+        10. Walk to conveyor
         """
         print(f"  [{self.stats.elapsed_formatted}] Banking... "
               f"{self.stats.status_line()}")
 
-        # Ensure run is on
         self.furnace.ensure_run_enabled()
 
-        # Open bank with retry
+        # ── Collect pending bars from previous trip ──
+        # The priming pattern: after the first ore trip, we always have
+        # bars sitting in the dispenser. Collect them before banking.
+        if self._bars_pending_collection:
+            print(f"  [{self.stats.elapsed_formatted}] Collecting previous bars first...")
+
+            # Equip ice gloves before going to dispenser
+            if self.settings.use_ice_gloves:
+                self.furnace.swap_to_ice_gloves()
+
+            self.furnace.walk_to_dispenser()
+            self.humanizer.action_delay()
+
+            # Bars should be ready by now (smelted while we were banking)
+            # Small wait just in case
+            self.furnace.wait_for_bars(timeout=2.0)
+
+            bars_collected = 0
+            for attempt in range(self.MAX_RETRIES):
+                bars_collected = self.furnace.collect_bars(self.settings.bar_type)
+                if bars_collected > 0:
+                    break
+                self.humanizer.tick_delay()
+
+            if bars_collected > 0:
+                self.stats.add_bars(bars_collected)
+                print(f"    Collected {bars_collected} bars from previous batch!")
+            else:
+                print("    No bars to collect (may have been empty)")
+
+            self._bars_pending_collection = False
+
+            # Walk back to bank
+            self.furnace.walk_to_bank()
+            self.humanizer.action_delay()
+
+        # ── Open bank ──
         for attempt in range(self.MAX_RETRIES):
             if self.bank.open_bank():
                 break
@@ -197,55 +234,50 @@ class BlastFurnaceStateMachine:
             self.state = BotState.WALKING_TO_BANK
             return
 
-        # Check supplies
+        # ── Check supplies ──
         if not self.bank.has_supplies(self.settings.bar_type):
             print("  [DONE] Out of supplies!")
             self.state = BotState.STOPPED
             return
 
-        # Deposit inventory (except coal bag)
+        # ── Deposit inventory ──
         self.bank.deposit_all_except_coal_bag()
         self.humanizer.bank_delay()
 
-        # Stamina management
+        # ── Stamina ──
         if self.settings.use_stamina:
             self.bank.handle_stamina()
 
-        # Withdraw ores/coal for this trip
+        # ── Withdraw ores/coal ──
         if not self.bank.withdraw_ore(self.settings.bar_type):
             self._error("Failed to withdraw ores")
             return
 
-        # Read trip type (set during withdraw_ore, before counter changed)
+        # Read trip type
         self._is_ore_trip = self.bank.is_ore_trip()
 
-        # Count items for stat tracking
-        coal_bag_slot = self.coal_bag.get_locked_slot() if self.coal_bag else None
+        # Count items for stats
+        coal_bag_slot = (self.coal_bag.get_locked_slot()
+                         if self.coal_bag else None)
         self._items_withdrawn_count = self.inventory.count_filled_slots(
             exclude_slot=coal_bag_slot
         )
 
-        # Close bank
+        # ── Close bank ──
         self.bank.close_bank()
         self.humanizer.transition_delay()
 
-        # Equip correct gloves AFTER closing bank, BEFORE going to conveyor
+        # ── Equip correct gloves ──
         bar = self.settings.bar_type
         if bar == BarType.GOLD and self.settings.use_goldsmith_gauntlets:
-            # Goldsmith gauntlets must be on when gold ore enters the furnace
             self.furnace.swap_to_goldsmith_gauntlets()
-        elif self._is_ore_trip and self.settings.use_ice_gloves:
-            # For non-gold ore trips, we'll need ice gloves at the dispenser
-            # Don't swap yet — we'll swap before collection
-            pass
 
-        # Track the trip
         self.stats.add_trip()
         self._consecutive_errors = 0
         self.state = BotState.WALKING_TO_CONVEYOR
 
     def _handle_walk_to_conveyor(self):
-        """Walk from bank to conveyor belt via minimap."""
+        """Walk from bank to conveyor belt."""
         print(f"  [{self.stats.elapsed_formatted}] Walking to conveyor...")
         self.furnace.walk_to_conveyor()
         self.humanizer.action_delay()
@@ -254,10 +286,11 @@ class BlastFurnaceStateMachine:
     def _handle_deposit_ore(self):
         """
         Deposit ores on the conveyor belt.
-        Coal bag emptying is handled inside FurnaceHandler based on trip type.
+        Coal bag handling and deposit order managed by FurnaceHandler.
         """
+        trip_type = "ore" if self._is_ore_trip else "coal"
         print(f"  [{self.stats.elapsed_formatted}] Depositing on conveyor "
-              f"({'ore' if self._is_ore_trip else 'coal'} trip)...")
+              f"({trip_type} trip)...")
 
         for attempt in range(self.MAX_RETRIES):
             if self.furnace.deposit_on_conveyor(
@@ -270,79 +303,75 @@ class BlastFurnaceStateMachine:
             self.state = BotState.WALKING_TO_BANK
             return
 
-        # Track resource usage
+        # ── Track resource usage ──
         if self._is_ore_trip:
             self.stats.add_ore(self._items_withdrawn_count)
-            # Coal bag coal was also deposited on ore trips (for coal bars)
             if (self.settings.bar_type.data.requires_coal
                     and self.coal_bag is not None):
                 self.stats.add_coal(27)
         else:
-            # Coal-only trip: inventory coal + coal bag coal
             self.stats.add_coal(self._items_withdrawn_count)
             if self.coal_bag is not None:
                 self.stats.add_coal(27)
 
         self._consecutive_errors = 0
 
-        # Route to next state
+        # ── Route to next state ──
         if self._is_ore_trip:
-            # Ore deposited → bars will smelt → go collect
-            self.state = BotState.WALKING_TO_DISPENSER
+            if not self.furnace.is_primed:
+                # FIRST ORE TRIP: must wait for bars (no previous batch)
+                self.furnace.mark_primed()
+                self.state = BotState.WALKING_TO_DISPENSER
+            else:
+                # PRIMED: bars will smelt while we bank. Mark for collection
+                # on next banking cycle. Go straight to bank.
+                self._bars_pending_collection = True
+                self.state = BotState.WALKING_TO_BANK
         else:
-            # Coal-only trip → go back for more
+            # Coal-only trip: no bars produced, go back for more
             self.state = BotState.WALKING_TO_BANK
 
     def _handle_walk_to_dispenser(self):
-        """Walk from conveyor to bar dispenser."""
-        print(f"  [{self.stats.elapsed_formatted}] Walking to dispenser...")
+        """Walk from conveyor to bar dispenser (first trip only)."""
+        print(f"  [{self.stats.elapsed_formatted}] Walking to dispenser "
+              f"(first trip — priming)...")
         self.furnace.walk_to_dispenser()
         self.humanizer.action_delay()
         self.state = BotState.WAITING_FOR_BARS
 
     def _handle_waiting_for_bars(self):
         """
-        Wait for bars to finish smelting.
-        Bars smelt in ~2 game ticks after ore is deposited on the conveyor.
-        The dispenser is NOT interactable until bars are done.
-        We must wait, not spam-click.
+        Wait for bars to finish smelting (first trip only).
+        The dispenser is in "Pouring" state and cannot be clicked.
+        Must wait until it transitions to "Hot" or "Cooled".
         """
-        print(f"  [{self.stats.elapsed_formatted}] Waiting for bars...")
+        print(f"  [{self.stats.elapsed_formatted}] Waiting for bars to smelt...")
 
-        # Wait at least 2 ticks (bars smelt nearly instantly at BF)
+        # Wait at least 2 game ticks (~1.2s)
         self.humanizer.tick_delay()
         self.humanizer.tick_delay()
 
-        # Then poll for bars with a generous timeout
+        # Poll for bars
         bars_ready = self.furnace.wait_for_bars(
             timeout=self.settings.smelt_wait_ms / 1000.0
         )
 
-        if bars_ready:
-            self.state = BotState.COLLECTING_BARS
-        else:
-            # Even if visual detection failed, bars are almost certainly
-            # ready after this much waiting. Try to collect anyway.
-            print("    Bar detection uncertain, attempting collection...")
-            self.state = BotState.COLLECTING_BARS
+        if not bars_ready:
+            print("    Bar detection uncertain, attempting collection anyway...")
+
+        self.state = BotState.COLLECTING_BARS
 
     def _handle_collect_bars(self):
         """
-        Collect bars from the bar dispenser.
-        Must have ice gloves equipped (for non-gold, or gold if using ice gloves).
+        Collect bars from dispenser (first trip only — after that,
+        collection happens at start of BANKING state).
         """
         print(f"  [{self.stats.elapsed_formatted}] Collecting bars...")
 
         # Equip ice gloves BEFORE clicking dispenser
         if self.settings.use_ice_gloves:
-            if self.settings.bar_type == BarType.GOLD:
-                # For gold: swap from goldsmith gauntlets to ice gloves
-                self.furnace.swap_to_ice_gloves()
-            # For other bars: ice gloves should already be equipped,
-            # but verify/equip just in case
             self.furnace.swap_to_ice_gloves()
 
-        # Collect bars with retry
         bars_collected = 0
         for attempt in range(self.MAX_RETRIES):
             bars_collected = self.furnace.collect_bars(self.settings.bar_type)
@@ -362,7 +391,7 @@ class BlastFurnaceStateMachine:
         self.state = BotState.WALKING_TO_BANK
 
     def _handle_walk_to_bank(self):
-        """Walk from dispenser/conveyor back to bank."""
+        """Walk back to bank."""
         print(f"  [{self.stats.elapsed_formatted}] Walking to bank...")
         self.furnace.walk_to_bank()
         self.humanizer.action_delay()

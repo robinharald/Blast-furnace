@@ -3,31 +3,34 @@ Furnace interaction handler.
 
 Handles:
 - Clicking the conveyor belt to deposit ores
-- Emptying coal bag at conveyor
+- Emptying coal bag at conveyor (shift-click)
 - Walking between conveyor, dispenser, and bank via minimap
 - Detecting when bars are ready at the dispenser
-- Collecting bars (press SPACE or click dispenser with ice gloves)
+- Collecting bars (click dispenser "Take", then SPACE to confirm)
 - Glove swapping (goldsmith gauntlets <-> ice gloves)
 
-Key Blast Furnace mechanics:
-- Conveyor belt left-click: "Put-ore-on" deposits all matching ores from inventory
-- Coal bag: left-click empties coal INTO INVENTORY, then must click conveyor again
-- Bar dispenser: click "Take" to collect bars. With ice gloves, bars go straight
-  to inventory. Without ice gloves, you need a bucket of water to cool them first.
-- The dispenser is only interactable when bars are ready. Before that it shows
-  "The bars are still too hot" or simply has no "Take" option.
-- Bars smelt ~2 ticks after ore hits the conveyor (nearly instant on BF worlds).
-- For coal-requiring bars: ALL coal must be in the furnace BEFORE the primary ore
-  is deposited, otherwise you get wrong bars (e.g., iron instead of steel).
+Key Blast Furnace mechanics (from OSRS wiki):
+- Conveyor belt left-click: "Put-ore-on" deposits all ores from inventory
+- Coal bag: SHIFT-CLICK at conveyor empties coal into inventory, then click conveyor
+- Bar dispenser has 4 states: Empty, Pouring, Hot, Cooled
+  - "Take" option only in Hot and Cooled states
+  - Pouring state: NO interaction possible, must wait
+  - With ice gloves: click "Take" and bars go to inventory
+  - Without ice gloves: need bucket of water first
+- Bars smelt ~2 ticks after ore hits the conveyor
+- ALL coal must be in furnace BEFORE primary ore for coal-requiring bars
+- Max 28 bars stored in dispenser at once
+- The efficient pattern: collect PREVIOUS batch first, then deposit new ore
+  (eliminates smelting wait time)
 """
 
 import time
 import pyautogui
+import numpy as np
 from config import ScreenRegions, Colors, COLOR_TOLERANCE, BotSettings
 from screen.capture import (
     capture_region, color_matches, get_pixel_color,
     region_has_color, get_pixel_color_from_frame,
-    count_color_in_region,
 )
 from game.inventory import InventoryReader
 from input import mouse
@@ -47,14 +50,35 @@ class FurnaceHandler:
         self.inventory = inventory
         self.coal_bag = coal_bag  # Can be None if not using coal bag
         self.humanizer = humanizer
-        # Track the screen state from the previous frame for idle detection
-        self._prev_viewport_sample = None
+
+        # Whether we've primed the furnace (first trip has no bars to collect)
+        self._primed = False
+
+        # Whether we need to preload coal before first ore trip
+        # (for steel/mithril/adamant/rune on the very first cycle)
+        self._coal_preloaded = False
 
     def _get_coal_bag_slot(self):
         """Safely get coal bag slot, returns None if no coal bag."""
         if self.coal_bag is not None:
             return self.coal_bag.get_locked_slot()
         return None
+
+    @property
+    def is_primed(self):
+        """Whether the furnace has been primed (previous bars exist to collect)."""
+        return self._primed
+
+    def mark_primed(self):
+        """Mark that bars now exist in the dispenser from a previous deposit."""
+        self._primed = True
+
+    @property
+    def coal_preloaded(self):
+        return self._coal_preloaded
+
+    def mark_coal_preloaded(self):
+        self._coal_preloaded = True
 
     # ── Navigation via minimap ──
 
@@ -83,11 +107,8 @@ class FurnaceHandler:
         """
         Wait until the player stops moving.
         Detects movement by comparing viewport pixel samples between frames.
-        The game viewport changes when the player moves (camera follows player).
         """
         start = time.time()
-
-        # Sample a small area of the game viewport center
         sample_x = self.regions.game_x + self.regions.game_w // 2 - 20
         sample_y = self.regions.game_y + self.regions.game_h // 2 - 20
         sample_w, sample_h = 40, 40
@@ -99,14 +120,11 @@ class FurnaceHandler:
             time.sleep(0.35)
             curr_sample = capture_region(sample_x, sample_y, sample_w, sample_h)
 
-            # Compare frames: if mostly the same, player is idle
-            import numpy as np
             diff = np.mean(np.abs(curr_sample.astype(float) - prev_sample.astype(float)))
 
             if diff < 5.0:
                 stable_count += 1
                 if stable_count >= 2:
-                    # Two consecutive stable frames = player stopped
                     self.humanizer.action_delay()
                     return True
             else:
@@ -120,19 +138,14 @@ class FurnaceHandler:
 
     def ensure_run_enabled(self):
         """
-        Check if run is enabled and toggle it on if not.
-        The run orb is near the minimap. When run is off, the orb icon is darker.
+        Toggle run on if it's off. The run orb is near the minimap.
         """
-        # Run orb is typically to the right/below the minimap
         orb_x = self.regions.minimap_cx + 24
         orb_y = self.regions.minimap_cy + 78
         color = get_pixel_color(orb_x, orb_y)
 
-        # When run is ON, the orb has a brighter yellow/green tint
-        # When OFF, it's much darker/grey
         brightness = sum(color) / 3
         if brightness < 100:
-            # Run appears to be off — click the orb to toggle
             mouse.click(orb_x, orb_y, variance=2)
             self.humanizer.action_delay()
 
@@ -140,8 +153,8 @@ class FurnaceHandler:
 
     def click_conveyor(self):
         """
-        Click the conveyor belt to deposit ores.
-        Left-click action is "Put-ore-on" which deposits all ores from inventory.
+        Click the conveyor belt. Left-click = "Put-ore-on".
+        Deposits all ores/coal from inventory onto the belt.
         """
         cx, cy = self.regions.conveyor_pos
         mouse.click(cx, cy, variance=4)
@@ -149,65 +162,68 @@ class FurnaceHandler:
 
     def deposit_on_conveyor(self, bar_type: BarType, is_ore_trip: bool):
         """
-        Full conveyor deposit sequence. The order matters critically for
-        coal-requiring bars:
+        Full conveyor deposit sequence.
+
+        CRITICAL ORDER FOR COAL BARS:
+        Coal must be in the furnace BEFORE ore. If iron is deposited without
+        coal, you get iron bars instead of steel. The coal bag coal must
+        be emptied and deposited BEFORE the primary ore.
 
         FOR COAL-ONLY TRIPS:
           1. Click conveyor (deposits coal from inventory)
-          2. Empty coal bag (coal goes to inventory)
-          3. Click conveyor again (deposits coal bag coal)
+          2. Shift-click coal bag (empties coal to inventory)
+          3. Click conveyor again (deposits coal from bag)
 
-        FOR ORE TRIPS (coal-requiring bars):
-          1. Empty coal bag first (coal goes to inventory)
-          2. Click conveyor (deposits coal from bag + ore from inventory)
-          OR if coal bag was already emptied:
+        FOR ORE TRIPS (coal-requiring bars with coal bag):
+          1. Shift-click coal bag (empties coal to inventory)
+          2. Click conveyor (deposits coal from bag + primary ore together)
+             The coal goes in first since it's earlier in inventory slots.
+
+        FOR SIMPLE BARS (no coal needed):
           1. Click conveyor (deposits ore)
 
-        FOR SIMPLE BARS (no coal):
-          1. Click conveyor (deposits ore)
-
-        Returns True when inventory is clear of ores.
+        Returns True when inventory is clear.
         """
         coal_bag_slot = self._get_coal_bag_slot()
+        has_coal_bag = self.coal_bag is not None and self.settings.use_coal_bag
 
-        if bar_type.data.requires_coal and self.coal_bag is not None and not self.coal_bag.is_empty:
-            # Has coal in the bag — need to handle it
-
+        if bar_type.data.requires_coal and has_coal_bag and not self.coal_bag.is_empty:
             if not is_ore_trip:
-                # COAL-ONLY TRIP: deposit inventory coal first, then bag coal
+                # COAL-ONLY TRIP
+                # Step 1: deposit inventory coal
                 self.click_conveyor()
                 self._wait_for_deposit(timeout=3.0)
                 self.humanizer.action_delay()
 
-                # Empty coal bag → coal goes to inventory
-                self.coal_bag.empty()
+                # Step 2: shift-click coal bag to empty into inventory
+                self.coal_bag.empty_at_conveyor()
                 self.humanizer.action_delay()
 
-                # Deposit the coal that came from the bag
+                # Step 3: deposit the coal that came from bag
                 if not self.inventory.is_inventory_empty(exclude_slot=coal_bag_slot):
                     self.click_conveyor()
                     self._wait_for_deposit(timeout=3.0)
             else:
-                # ORE TRIP: empty coal bag first so coal goes in before ore
-                # This ensures coal is deposited before primary ore
-                self.coal_bag.empty()
+                # ORE TRIP with coal bag
+                # Step 1: shift-click coal bag first (coal goes to inventory)
+                self.coal_bag.empty_at_conveyor()
                 self.humanizer.action_delay()
 
-                # Now click conveyor — deposits both coal (from bag) and ore together
+                # Step 2: click conveyor — deposits everything
+                # Coal from bag + ore from bank both go onto conveyor
                 self.click_conveyor()
                 self._wait_for_deposit(timeout=3.0)
 
-                # If anything remains (shouldn't normally), click again
+                # Step 3: safety — if anything remains, click again
                 if not self.inventory.is_inventory_empty(exclude_slot=coal_bag_slot):
                     self.humanizer.action_delay()
                     self.click_conveyor()
                     self._wait_for_deposit(timeout=3.0)
         else:
-            # Simple deposit — no coal bag involved
+            # Simple deposit — no coal bag or no coal in bag
             self.click_conveyor()
             self._wait_for_deposit(timeout=3.0)
 
-        # Verify inventory is clear
         return self.inventory.is_inventory_empty(exclude_slot=coal_bag_slot)
 
     def _wait_for_deposit(self, timeout=3.0):
@@ -228,15 +244,19 @@ class FurnaceHandler:
         """
         Check if bars are ready to collect at the dispenser.
 
-        Detection: The bar dispenser changes visually when bars are ready.
-        The dispenser object gets a glow or the bars become visible on top.
-        We sample the area around the dispenser position for the glow color.
+        The bar dispenser has 4 states:
+        - Empty: no bars, only "Check" option
+        - Pouring: bars being smelted, NO interaction possible
+        - Hot: bars ready but hot, "Take" option available (need ice gloves)
+        - Cooled: bars ready and cooled, "Take" option available
+
+        We detect the Hot/Cooled state by checking for a visual glow or
+        color change around the dispenser.
         """
         dx, dy = self.regions.dispenser_pos
         frame = capture_region(dx - 25, dy - 25, 50, 50)
         offset = (dx - 25, dy - 25)
 
-        # Check for the characteristic bar-ready glow/shine
         return region_has_color(
             frame, Colors.BAR_READY_GLOW,
             dx - 20, dy - 20, dx + 20, dy + 20,
@@ -245,9 +265,8 @@ class FurnaceHandler:
 
     def click_dispenser(self):
         """
-        Click the bar dispenser. Left-click action is "Take" when bars are ready.
-        When no bars are ready, the dispenser shows "Check" or is not interactable
-        for taking — clicking it does nothing useful.
+        Click the bar dispenser. Left-click = "Take" when bars are ready.
+        When empty or pouring, clicking does nothing useful.
         """
         dx, dy = self.regions.dispenser_pos
         mouse.click(dx, dy, variance=4)
@@ -257,32 +276,27 @@ class FurnaceHandler:
         """
         Collect bars from the bar dispenser.
 
-        With ice gloves (or Smiths gloves (i)) equipped:
-          - Click dispenser → "Take" → bars go directly to inventory
-          - May need to press SPACE or click on the bar in the interface
+        Flow:
+        1. Click dispenser ("Take")
+        2. If a confirmation dialogue appears, press SPACE to confirm
+        3. Bars transfer to inventory
 
-        Without ice gloves:
-          - Need bucket of water to cool bars first (not recommended)
-
-        The collection interface shows a bar icon. Press SPACE or click the
-        bar to collect all available bars.
+        With ice gloves equipped, bars go straight to inventory.
+        The SPACE press handles any dialogue that may appear.
 
         Returns number of bars collected (0 if failed).
         """
         coal_bag_slot = self._get_coal_bag_slot()
-
-        # Count items before collection
         items_before = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
 
         # Click dispenser
         self.click_dispenser()
 
-        # Wait for the collection interface / bars to enter inventory
-        # The dispenser interaction has a short delay
+        # Wait for interaction to process
         time.sleep(0.8)
         self.humanizer.action_delay()
 
-        # Press SPACE to confirm collection (this is the standard BF interaction)
+        # Press SPACE to confirm any dialogue
         pyautogui.press("space")
         self.humanizer.reaction_delay()
 
@@ -291,7 +305,7 @@ class FurnaceHandler:
         items_after = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
         collected = max(0, items_after - items_before)
 
-        # If first attempt didn't work, try clicking the bar collect button
+        # Fallback: if SPACE didn't work, try clicking the collect button
         if collected == 0:
             bx, by = self.regions.bar_collect_btn
             mouse.click(bx, by, variance=3)
@@ -304,9 +318,9 @@ class FurnaceHandler:
 
     def wait_for_bars(self, timeout=5.0):
         """
-        Wait for bars to finish smelting at the dispenser.
-        Bars at the BF smelt in ~2 game ticks after ore is deposited.
-        The dispenser becomes interactable only when bars are done.
+        Wait for bars to finish smelting. Bars smelt in ~2 game ticks.
+        During the "Pouring" state the dispenser is not interactable.
+        We poll until the Hot/Cooled state is detected.
         """
         start = time.time()
         while time.time() - start < timeout:
@@ -314,7 +328,7 @@ class FurnaceHandler:
                 self.humanizer.action_delay()
                 return True
             time.sleep(0.4)
-        # Even if detection fails, bars are almost certainly ready after 5s
+        # After timeout, bars are almost certainly ready
         return False
 
     # ── Glove management ──
@@ -322,8 +336,7 @@ class FurnaceHandler:
     def swap_to_ice_gloves(self):
         """
         Equip ice gloves before collecting bars.
-        Ice gloves auto-cool the bars so they go directly to inventory.
-        Click the ice gloves in inventory to equip them.
+        Ice gloves auto-cool bars on collection.
         """
         if not self.settings.use_ice_gloves:
             return
@@ -341,7 +354,7 @@ class FurnaceHandler:
     def swap_to_goldsmith_gauntlets(self):
         """
         Equip goldsmith gauntlets for gold ore XP bonus.
-        Must be worn when the gold bar XP is awarded (on deposit).
+        Must be worn when gold ore is deposited on conveyor.
         """
         if not self.settings.use_goldsmith_gauntlets:
             return
