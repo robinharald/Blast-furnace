@@ -19,7 +19,7 @@ Key Blast Furnace mechanics (from OSRS wiki + gameplay):
   - Without ice gloves: need bucket of water to cool first
   - The dispenser does NOT work while a dialogue box is already open
   - If no bars are ready, clicking does nothing useful
-- Bars smelt ~2 ticks after ore hits the conveyor
+- Bars smelt ~11 ticks (~6.6s) after ore hits the conveyor (variable delay)
 - ALL coal must be in furnace BEFORE primary ore for coal-requiring bars
 - Max 28 bars stored in dispenser at once
 - The efficient pattern: bank → walk to conveyor → deposit ore on conveyor
@@ -336,11 +336,11 @@ class FurnaceHandler:
 
         return collected
 
-    def wait_for_bars(self, timeout=5.0):
+    def wait_for_bars(self, timeout=8.0):
         """
-        Wait for bars to finish smelting. Bars smelt in ~2 game ticks.
-        During the "Pouring" state the dispenser is not interactable.
-        We poll until the Hot/Cooled state is detected.
+        Wait for bars to finish smelting. Bars smelt in ~11 game ticks (~6.6s).
+        The delay is somewhat variable. Only needed on first trip (priming);
+        after that, pipelining ensures bars are always ready before we arrive.
         """
         start = time.time()
         while time.time() - start < timeout:

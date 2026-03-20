@@ -9,10 +9,10 @@ Key mechanics (from OSRS wiki):
 - In BANK (interface open): LEFT-CLICK = "Fill" (fills bag from bank coal)
 - In INVENTORY (bank closed): LEFT-CLICK = "Empty" (dumps coal to inventory)
 - The context (bank open vs closed) determines which action left-click performs
-- Quirk: bag holds 27 but inventory carries 27 ore (28 - bag slot),
-  so after depositing at conveyor, 1 coal may remain in bag.
-  On next bank visit, the left-click while bank is open will still be "Fill"
-  if the bag is not completely full. Need to empty residual first, then fill.
+- With deposit-locked slot for coal bag, 27 free slots remain (28 - 1 locked).
+  Bag holds 27, empties perfectly with no residual.
+- The locked slot is set via OSRS native deposit locks (per-slot).
+  "Deposit inventory" automatically skips locked slots.
 """
 
 import time

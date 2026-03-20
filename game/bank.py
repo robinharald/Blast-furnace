@@ -11,10 +11,13 @@ Handles:
 
 Blast Furnace bank specifics:
 - The bank is a "Bank chest" (not a booth), left-click "Use"
-- "Deposit inventory" button deposits everything including coal bag
-- After deposit-all, must re-withdraw coal bag immediately
+- "Deposit inventory" button deposits all UNLOCKED slots
+- OSRS native deposit locks (per-slot) protect coal bag and gloves
+  The player must pre-lock the relevant slot in-game.
+  Locked slots are SKIPPED by "Deposit inventory" — no re-withdrawal needed.
 - Bank search: click magnifying glass, type name, items filter instantly
 - Must clear search between different item lookups (click X or clear field)
+- Bank chest has 1 extra tick delay vs banker NPC interaction
 """
 
 import time
@@ -121,70 +124,25 @@ class BankHandler:
 
     def deposit_all_except_locked(self):
         """
-        Deposit entire inventory, then re-withdraw locked items.
+        Deposit entire inventory using the "Deposit inventory" button.
 
-        "Deposit inventory" button deposits EVERYTHING. We re-withdraw:
-        - Coal bag: for coal-requiring bars (steel/mithril/adamant/rune)
-        - Gloves: for gold bars (goldsmith <-> ice gloves swap)
+        OSRS native deposit locks (per-slot) mean the button automatically
+        SKIPS items in locked slots. The player must pre-configure:
+        - Coal bars: lock slot 0 (coal bag)
+        - Gold bars: lock slot 0 (gloves for swapping)
 
-        These are NEVER both active at the same time:
-        - Gold bars: no coal bag needed, only glove slot
-        - Coal bars: coal bag needed, no glove slot (ice gloves stay equipped)
+        No re-withdrawal needed — locked items stay in inventory.
+        Only bars and leftover items get deposited.
         """
         if not self.is_bank_open():
             return False
 
-        # Click the deposit inventory button
+        # Click the deposit inventory button — locked slots are skipped by the game
         dx, dy = self.regions.bank_deposit_inv_btn
         mouse.click(dx, dy, variance=3)
         self.humanizer.action_delay()
         self.humanizer.action_delay()
 
-        # Re-withdraw locked items based on bar type
-        if self.settings.use_coal_bag and self.coal_bag is not None:
-            # Coal bars: re-withdraw coal bag (gloves not in inventory)
-            self._withdraw_coal_bag()
-        elif self.settings.use_goldsmith_gauntlets and self.settings.use_ice_gloves:
-            # Gold bars: re-withdraw the unequipped pair of gloves
-            # One pair is equipped (stays), the other was deposited
-            self._withdraw_item("Goldsmith gauntlets")
-            self._withdraw_item("Ice gloves")
-
-        return True
-
-    def _withdraw_coal_bag(self):
-        """
-        Withdraw the coal bag from bank back to inventory.
-        Uses bank search to find it reliably.
-        """
-        self._bank_search("Coal bag")
-        self.humanizer.bank_delay()
-        self._click_first_bank_slot()
-        self.humanizer.action_delay()
-
-        # Verify it's back
-        time.sleep(0.3)
-        if self.coal_bag is not None:
-            return self.coal_bag.is_bag_present()
-        return True
-
-    def _withdraw_item(self, name):
-        """
-        Withdraw a single item from bank by name.
-        Used for re-withdrawing gloves after deposit-all.
-        """
-        self._bank_search(name)
-        self.humanizer.bank_delay()
-
-        # Check if the item exists in bank (might already be equipped)
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
-        color = get_pixel_color(bx, by)
-        if color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE):
-            return False  # Item not in bank (probably equipped)
-
-        self._click_first_bank_slot()
-        self.humanizer.action_delay()
         return True
 
     def _bank_search(self, term):

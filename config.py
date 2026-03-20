@@ -66,22 +66,20 @@ class ScreenRegions:
 
     def inv_slot_center(self, slot):
         """
-        Get the screen center of inventory slot.
-        Slots are 1-based (1-28) as shown in-game, converted to 0-based internally.
-        Numbered left-to-right, top-to-bottom.
+        Get the screen center of inventory slot (0-27).
+        Slots numbered left-to-right, top-to-bottom.
+        0-indexed (matching game engine and all bot frameworks).
         """
-        idx = slot - 1  # Convert 1-based to 0-based
-        col = idx % self.inv_cols
-        row = idx // self.inv_cols
+        col = slot % self.inv_cols
+        row = slot // self.inv_cols
         x = self.inv_x + col * self.inv_slot_w + self.inv_slot_w // 2
         y = self.inv_y + row * self.inv_slot_h + self.inv_slot_h // 2
         return (x, y)
 
     def inv_slot_region(self, slot):
-        """Get the bounding box (x1, y1, x2, y2) of an inventory slot (1-based)."""
-        idx = slot - 1  # Convert 1-based to 0-based
-        col = idx % self.inv_cols
-        row = idx // self.inv_cols
+        """Get the bounding box (x1, y1, x2, y2) of an inventory slot (0-indexed)."""
+        col = slot % self.inv_cols
+        row = slot // self.inv_cols
         x1 = self.inv_x + col * self.inv_slot_w + 4
         y1 = self.inv_y + row * self.inv_slot_h + 4
         x2 = x1 + self.inv_slot_w - 8
@@ -104,22 +102,26 @@ class BotSettings:
         self.use_goldsmith_gauntlets = True
         self.use_ice_gloves = True
 
-        # Coal bag locked inventory slot (1-28)
+        # Coal bag locked inventory slot (0-27, 0-indexed)
         # Used for coal-requiring bars (steel/mithril/adamant/rune). Not used for gold.
-        self.coal_bag_slot = 1
+        # This slot must be deposit-locked in-game so "Deposit inventory" skips it.
+        self.coal_bag_slot = 0
 
-        # Glove swap locked inventory slot (1-28)
+        # Glove swap locked inventory slot (0-27, 0-indexed)
         # Used for gold bars only (goldsmith gauntlets <-> ice gloves swap).
         # Coal bars don't need a glove slot — only ice gloves are used
         # and they stay equipped (no swapping needed).
         # Never active at the same time as coal bag.
-        self.glove_slot = 1  # Same slot as coal bag — only one is ever active
+        # This slot must be deposit-locked in-game so "Deposit inventory" skips it.
+        self.glove_slot = 0  # Same slot as coal bag — only one is ever active
 
         # Emergency stop key
         self.stop_key = "f6"
 
         # How long to wait for bars to smelt (ms)
-        self.smelt_wait_ms = 3000
+        # Smelting takes ~11 ticks (~6.6s) but can vary.
+        # Only matters on first trip; after that, pipelining avoids waiting.
+        self.smelt_wait_ms = 8000
 
 
 class Colors:
