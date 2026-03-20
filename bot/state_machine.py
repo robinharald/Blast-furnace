@@ -47,6 +47,7 @@ from game.inventory import InventoryReader
 from game.coal_bag import CoalBagManager
 from game.bank import BankHandler
 from game.furnace import FurnaceHandler
+from input import mouse
 from anti_detect.humanizer import Humanizer
 from data.bars import BarType
 
@@ -332,22 +333,31 @@ class BlastFurnaceStateMachine:
         print(f"  [{self.stats.elapsed_formatted}] Collecting previous bars "
               f"at dispenser...")
 
+        # Click minimap to START walking to dispenser
+        mx, my = self.regions.minimap_dispenser
+        mouse.click(mx, my, variance=3)
+
+        # GLOVE SWAP WHILE RUNNING:
+        # Instead of waiting until arrival, swap gloves immediately after
+        # clicking minimap. Character is already moving — this uses the
+        # travel time productively and looks more human than standing
+        # still at the dispenser to fiddle with gear.
+        #
         # GOLD BAR XP DROP TIMING:
-        # Must wait for XP drop from newly deposited gold before swapping gloves.
+        # Must wait for XP drop from newly deposited gold before swapping.
         # The XP drop happens ~2 ticks (1.2s) after ore reaches the melting pot.
-        # Walking to dispenser takes ~2-3 seconds, which covers this naturally.
-        # But add a small extra wait to be safe.
-        if (self.settings.bar_type == BarType.GOLD
-                and self.settings.use_goldsmith_gauntlets):
-            self.humanizer.tick_delay()  # Extra safety for XP drop timing
-
-        # Walk to dispenser (close to conveyor, ~2-3 seconds walk)
-        self.furnace.walk_to_dispenser()
-        self.humanizer.action_delay()
-
-        # NOW safe to swap to ice gloves (XP drop has occurred)
+        # The minimap click + the delay below covers this.
         if self.settings.use_ice_gloves:
+            if (self.settings.bar_type == BarType.GOLD
+                    and self.settings.use_goldsmith_gauntlets):
+                # Wait ~2 ticks for XP drop before swapping off goldsmith
+                self.humanizer.tick_delay()
+                self.humanizer.tick_delay()
             self.furnace.swap_to_ice_gloves()
+
+        # Now wait for arrival at dispenser
+        self.furnace._wait_until_idle(timeout=6.0)
+        self.humanizer.action_delay()
 
         # Bars should be ready by now (smelted during our bank trip)
         # Small safety wait
@@ -383,7 +393,21 @@ class BlastFurnaceStateMachine:
         """Walk from conveyor to bar dispenser (first trip only)."""
         print(f"  [{self.stats.elapsed_formatted}] Walking to dispenser "
               f"(first trip — priming)...")
-        self.furnace.walk_to_dispenser()
+
+        # Click minimap to start walking
+        mx, my = self.regions.minimap_dispenser
+        mouse.click(mx, my, variance=3)
+
+        # Swap gloves while running (same optimization as collect_previous_bars)
+        if self.settings.use_ice_gloves:
+            if (self.settings.bar_type == BarType.GOLD
+                    and self.settings.use_goldsmith_gauntlets):
+                self.humanizer.tick_delay()
+                self.humanizer.tick_delay()
+            self.furnace.swap_to_ice_gloves()
+
+        # Wait for arrival
+        self.furnace._wait_until_idle(timeout=6.0)
         self.humanizer.action_delay()
         self.state = BotState.WAITING_FOR_BARS
 
@@ -415,9 +439,7 @@ class BlastFurnaceStateMachine:
         """
         print(f"  [{self.stats.elapsed_formatted}] Collecting bars (first trip)...")
 
-        # Equip ice gloves BEFORE clicking dispenser
-        if self.settings.use_ice_gloves:
-            self.furnace.swap_to_ice_gloves()
+        # Ice gloves already swapped during walk — no need to swap here
 
         bars_collected = 0
         for attempt in range(self.MAX_RETRIES):

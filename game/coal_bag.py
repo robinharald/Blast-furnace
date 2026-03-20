@@ -13,10 +13,18 @@ Key mechanics (from OSRS wiki):
   Bag holds 27, empties perfectly with no residual.
 - The locked slot is set via OSRS native deposit locks (per-slot).
   "Deposit inventory" automatically skips locked slots.
+
+IMPORTANT: We do NOT trust an internal coal counter. Server lag can cause
+clicks to not register, desyncing any counter. Instead we verify every
+fill and empty action visually:
+  - fill(): Compare bank coal slot pixels before/after clicking.
+  - empty_at_conveyor(): Poll inventory for new items appearing.
 """
 
 import time
+import numpy as np
 from config import ScreenRegions
+from screen.capture import capture_region, get_pixel_color
 from game.inventory import InventoryReader
 from input import mouse
 from anti_detect.humanizer import Humanizer
@@ -25,10 +33,12 @@ from anti_detect.humanizer import Humanizer
 class CoalBagManager:
     """
     Manages the coal bag: filling from bank, emptying at conveyor.
-    Tracks coal count internally since we can't read bag contents visually.
+    All actions are visually verified — no internal coal counter.
     """
 
     CAPACITY = 27
+    MAX_FILL_RETRIES = 3
+    MAX_EMPTY_RETRIES = 3
 
     def __init__(self, locked_slot: int, regions: ScreenRegions,
                  inventory: InventoryReader, humanizer: Humanizer):
@@ -36,97 +46,129 @@ class CoalBagManager:
         self.regions = regions
         self.inventory = inventory
         self.humanizer = humanizer
-        self._coal_count = 0
 
-    @property
-    def coal_count(self):
-        return self._coal_count
+        # Bank coal slot position (set by caller after bank opens)
+        # This is the position of the coal item in the bank search results.
+        self._bank_coal_pos = None
 
-    @property
-    def is_full(self):
-        return self._coal_count >= self.CAPACITY
+    def set_bank_coal_pos(self, x, y):
+        """Set the position of the coal item in bank (for quantity change detection)."""
+        self._bank_coal_pos = (x, y)
 
-    @property
-    def is_empty(self):
-        return self._coal_count <= 0
+    def _snapshot_bank_coal_area(self):
+        """
+        Capture a small region around the bank coal item's quantity text.
+        The quantity number sits in the top-left corner of the bank slot icon.
+        Capturing a ~30x15 area covers the quantity digits.
+        """
+        if self._bank_coal_pos is None:
+            return None
+        bx, by = self._bank_coal_pos
+        # Quantity text is in the top-left of the item icon
+        return capture_region(bx - 15, by - 15, 30, 15)
+
+    def _bank_coal_changed(self, before_snap, after_snap):
+        """Check if the bank coal quantity area changed between two snapshots."""
+        if before_snap is None or after_snap is None:
+            return True  # Can't verify, assume it worked
+        if before_snap.shape != after_snap.shape:
+            return True
+        diff = np.mean(np.abs(before_snap.astype(float) - after_snap.astype(float)))
+        # If mean pixel difference > 3, the quantity text changed
+        return diff > 3.0
 
     def fill(self):
         """
-        Fill the coal bag while bank is open.
+        Fill the coal bag while bank is open. Visually verified.
 
         In the bank interface, left-clicking the coal bag = "Fill".
-        However, if the bag has residual coal (1 left from previous cycle),
-        the default left-click might show "Empty" instead.
-        We handle this by: left-click (empties residual), then left-click again (fills).
-        """
-        x, y = self.regions.inv_slot_center(self.locked_slot)
-        x, y = self.humanizer.jitter_position(x, y, radius=3)
+        This pulls coal from the bank into the bag.
 
-        if self._coal_count > 0 and self._coal_count < self.CAPACITY:
-            # Has residual coal — click once to empty it into bank, then fill
-            mouse.click(x, y)
-            self.humanizer.action_delay()
-            # Now click again to fill
-            x2, y2 = self.regions.inv_slot_center(self.locked_slot)
-            x2, y2 = self.humanizer.jitter_position(x2, y2, radius=3)
-            mouse.click(x2, y2)
-            self.humanizer.action_delay()
-        else:
-            # Empty bag — single click to fill
+        Verification: snapshot the bank coal item's quantity area before
+        and after clicking. If the quantity text pixels changed, the fill
+        worked. If not, retry up to MAX_FILL_RETRIES times.
+
+        Returns True if fill was verified, False if all retries failed.
+        """
+        for attempt in range(self.MAX_FILL_RETRIES):
+            # Snapshot bank coal quantity BEFORE
+            before = self._snapshot_bank_coal_area()
+
+            # Click coal bag to fill
+            x, y = self.regions.inv_slot_center(self.locked_slot)
+            x, y = self.humanizer.jitter_position(x, y, radius=3)
             mouse.click(x, y)
             self.humanizer.action_delay()
 
-        self._coal_count = self.CAPACITY
+            # Wait for server to process
+            time.sleep(0.3)
 
-    def empty_at_conveyor(self, free_slots=27):
+            # Snapshot bank coal quantity AFTER
+            after = self._snapshot_bank_coal_area()
+
+            # Verify: did the bank coal quantity change?
+            if self._bank_coal_changed(before, after):
+                return True
+
+            # Click didn't register — retry
+            if attempt < self.MAX_FILL_RETRIES - 1:
+                self.humanizer.action_delay()
+
+        return False
+
+    def empty_at_conveyor(self):
         """
-        Empty the coal bag when NOT in the bank interface.
+        Empty the coal bag when NOT in the bank interface. Visually verified.
 
         When the bank is closed, LEFT-CLICK on the coal bag = "Empty".
-        This dumps coal into inventory. Then click conveyor to deposit it.
+        This dumps coal into inventory.
 
-        Coal bag holds 27. With 1 locked slot (coal bag itself), 27 slots are free.
-        All 27 coal empty perfectly — no residual.
-        (Gold bars use glove slot instead of coal bag, so this is only for coal bars.)
+        Verification: count filled inventory slots before and after clicking.
+        If slot count increased, coal was emptied. If not, retry.
 
-        Args:
-            free_slots: Number of free inventory slots. Defaults to 27
-                        (28 total - coal bag slot). Override if inventory isn't empty.
-
-        Returns True if bag was emptied (even partially).
+        Returns True if empty was verified (items appeared in inventory).
         """
-        if self._coal_count <= 0:
-            return False
+        coal_bag_slot = self.locked_slot
 
-        x, y = self.regions.inv_slot_center(self.locked_slot)
-        x, y = self.humanizer.jitter_position(x, y, radius=3)
+        for attempt in range(self.MAX_EMPTY_RETRIES):
+            # Count filled slots BEFORE
+            filled_before = self.inventory.count_filled_slots(
+                exclude_slot=coal_bag_slot
+            )
 
-        # Left-click = "Empty" when bank is not open
-        mouse.click(x, y)
-        self.humanizer.action_delay()
+            # Click coal bag to empty
+            x, y = self.regions.inv_slot_center(self.locked_slot)
+            x, y = self.humanizer.jitter_position(x, y, radius=3)
+            mouse.click(x, y)
+            self.humanizer.action_delay()
 
-        # Brief wait for coal to appear in inventory
-        time.sleep(0.3)
+            # Poll for coal appearing in inventory (dynamic wait)
+            verified = self._poll_for_inventory_change(
+                filled_before, coal_bag_slot, timeout=1.5
+            )
+            if verified:
+                return True
 
-        # Track residual: bag had 27 but only 26 slots free → 1 remains
-        emptied = min(self._coal_count, free_slots)
-        self._coal_count = max(0, self._coal_count - emptied)
-        return True
+            # Click didn't register — retry
+            if attempt < self.MAX_EMPTY_RETRIES - 1:
+                self.humanizer.action_delay()
+
+        return False
+
+    def _poll_for_inventory_change(self, count_before, exclude_slot, timeout=1.5):
+        """Poll inventory until filled slot count increases or timeout."""
+        start = time.time()
+        while time.time() - start < timeout:
+            count_now = self.inventory.count_filled_slots(exclude_slot=exclude_slot)
+            if count_now > count_before:
+                return True
+            time.sleep(0.15)
+        return False
 
     def is_bag_present(self):
-        """
-        Check if the coal bag is still in its locked slot.
-        """
+        """Check if the coal bag is still in its locked slot."""
         return self.inventory.is_slot_filled(self.locked_slot)
 
     def get_locked_slot(self):
         """Return the locked slot number."""
         return self.locked_slot
-
-    def reset_count(self):
-        """Reset the internal coal counter."""
-        self._coal_count = 0
-
-    def set_count(self, count):
-        """Manually set coal count (for recovery/sync)."""
-        self._coal_count = min(count, self.CAPACITY)

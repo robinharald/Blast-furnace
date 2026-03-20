@@ -284,8 +284,18 @@ class BankHandler:
         has_bag = self.settings.use_coal_bag and self.coal_bag is not None
 
         if has_bag:
-            # Always fill coal bag first (every trip)
-            self.coal_bag.fill()
+            # Search for coal first so the bank displays it (needed for verification)
+            self._bank_search("Coal")
+            self.humanizer.bank_delay()
+
+            # Set coal position for visual verification of bag fill
+            bx = self.regions.game_x + self.regions.game_w // 2 - 150
+            by = self.regions.game_y + 115
+            self.coal_bag.set_bank_coal_pos(bx, by)
+
+            # Fill coal bag — visually verified (retries if click doesn't register)
+            if not self.coal_bag.fill():
+                print("    [WARN] Coal bag fill could not be verified")
             self.humanizer.action_delay()
 
             if coal_per_bar == 1:

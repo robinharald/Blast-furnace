@@ -200,7 +200,7 @@ class FurnaceHandler:
         coal_bag_slot = self._get_coal_bag_slot()
         has_coal_bag = self.coal_bag is not None and self.settings.use_coal_bag
 
-        if bar_type.data.requires_coal and has_coal_bag and not self.coal_bag.is_empty:
+        if bar_type.data.requires_coal and has_coal_bag:
             if not is_ore_trip:
                 # COAL-ONLY TRIP
                 # Step 1: deposit inventory coal
@@ -294,7 +294,7 @@ class FurnaceHandler:
         1. Click dispenser (left-click = "Take")
         2. A dialogue/collection window opens
         3. Press SPACE to collect all bars
-        4. Bars transfer to inventory (auto-cooled with ice gloves)
+        4. Poll inventory until bars appear (dynamic wait, no static sleep)
 
         Note: The dispenser does NOT work while a dialogue box is already open.
         If a stale dialogue is blocking, we dismiss it first with SPACE.
@@ -306,35 +306,67 @@ class FurnaceHandler:
 
         # Dismiss any blocking dialogue that might prevent dispenser interaction
         pyautogui.press("space")
-        time.sleep(0.2)
+        time.sleep(0.15)
 
         # Step 1: Click dispenser to open collection interface
         self.click_dispenser()
 
-        # Step 2: Wait for the collection dialogue to appear
-        time.sleep(0.8)
+        # Step 2: Wait for collection dialogue (poll, not static sleep)
+        self._poll_for_dialogue(timeout=2.0)
         self.humanizer.action_delay()
 
         # Step 3: Press SPACE to collect all bars
         pyautogui.press("space")
-        self.humanizer.reaction_delay()
 
-        # Step 4: Wait for bars to appear in inventory
-        time.sleep(0.6)
-        items_after = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
-        collected = max(0, items_after - items_before)
+        # Step 4: Poll inventory for bars appearing (dynamic wait)
+        collected = self._poll_for_bars_in_inventory(
+            items_before, coal_bag_slot, timeout=3.0
+        )
 
         # Fallback: if SPACE didn't register, try clicking the bar icon
         if collected == 0:
             self.humanizer.action_delay()
             bx, by = self.regions.bar_collect_btn
             mouse.click(bx, by, variance=3)
-            self.humanizer.reaction_delay()
-            time.sleep(0.5)
-            items_after = self.inventory.count_filled_slots(exclude_slot=coal_bag_slot)
-            collected = max(0, items_after - items_before)
+
+            collected = self._poll_for_bars_in_inventory(
+                items_before, coal_bag_slot, timeout=2.0
+            )
 
         return collected
+
+    def _poll_for_bars_in_inventory(self, items_before, exclude_slot, timeout=3.0):
+        """
+        Poll inventory until bar items appear. Returns count of new items.
+        Triggers transition as soon as items are detected — saves milliseconds
+        per trip and looks more human than static sleeps.
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            items_now = self.inventory.count_filled_slots(exclude_slot=exclude_slot)
+            collected = items_now - items_before
+            if collected > 0:
+                # Brief extra wait for remaining bars to finish transferring
+                time.sleep(0.15)
+                items_final = self.inventory.count_filled_slots(exclude_slot=exclude_slot)
+                return max(0, items_final - items_before)
+            time.sleep(0.1)
+        return 0
+
+    def _poll_for_dialogue(self, timeout=2.0):
+        """
+        Poll for the collection dialogue to appear after clicking dispenser.
+        Detects the dialogue by checking for the characteristic widget background
+        color in the expected region.
+        """
+        start = time.time()
+        wx, wy = self.regions.bar_collect_btn
+        while time.time() - start < timeout:
+            color = get_pixel_color(wx, wy)
+            if color_matches(color, Colors.DISPENSER_WIDGET_BG, 25):
+                return True
+            time.sleep(0.1)
+        return False
 
     def wait_for_bars(self, timeout=8.0):
         """
