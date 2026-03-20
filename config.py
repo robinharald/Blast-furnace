@@ -190,9 +190,10 @@ class Colors:
     # ── RuneLite Object Markers ──
     # Player tags these objects in RuneLite's Object Markers plugin.
     # Unique saturated colors that never appear in the BF environment.
-    MARKER_BANK = (255, 0, 0)           # Red — bank chest
-    MARKER_CONVEYOR = (255, 255, 0)     # Yellow — conveyor belt
-    MARKER_DISPENSER = (255, 0, 255)    # Magenta — bar dispenser
+    # RuneLite uses ARGB hex (AARRGGBB format).
+    MARKER_BANK = (0, 0, 255)           # Blue (FF0000FF) — bank chest
+    MARKER_CONVEYOR = (255, 0, 255)     # Magenta (FFFF00FF) — conveyor belt
+    MARKER_DISPENSER = (0, 255, 0)      # Lime green (FF00FF00) — bar dispenser
 
     # ── Chat/action indicators ──
     IDLE_INDICATOR = (0, 0, 0)          # Placeholder

@@ -6,10 +6,10 @@ RuneLite's Object Markers. The bot finds these colored overlays in the
 viewport to locate objects dynamically — immune to camera rotation,
 character position drift, and slight movement.
 
-Required RuneLite Object Marker tags:
-  Bank chest:     #FF0000 (Red)
-  Conveyor belt:  #FFFF00 (Yellow)
-  Bar dispenser:  #FF00FF (Magenta)
+Required RuneLite Object Marker tags (ARGB hex → RGB):
+  Bank chest:     FF0000FF → #0000FF (Blue)
+  Conveyor belt:  FFFF00FF → #FF00FF (Magenta)
+  Bar dispenser:  FF00FF00 → #00FF00 (Lime green)
 
 These colors never appear naturally in the Blast Furnace environment
 (dark browns, greys, orange lava). False positive rate is near zero
@@ -28,9 +28,9 @@ from config import ScreenRegions
 
 
 # RuneLite Object Marker colors (RGB)
-MARKER_BANK = (255, 0, 0)       # Red — bank chest
-MARKER_CONVEYOR = (255, 255, 0) # Yellow — conveyor belt
-MARKER_DISPENSER = (255, 0, 255) # Magenta — bar dispenser
+MARKER_BANK = (0, 0, 255)       # Blue — bank chest
+MARKER_CONVEYOR = (255, 0, 255) # Magenta — conveyor belt
+MARKER_DISPENSER = (0, 255, 0)  # Lime green — bar dispenser
 
 # Tight tolerance — these are pure saturated colors, very distinct
 # from the BF environment (browns, greys, orange lava)
