@@ -34,35 +34,8 @@ class ScreenRegions:
         self.inv_cols = 4
         self.inv_rows = 7
 
-        # ── Minimap ──
-        self.minimap_cx = 643
-        self.minimap_cy = 83
-        self.minimap_r = 72
-
-        # ── Key clickable positions (calibrated by wizard) ──
-        # Bank chest click position
-        self.bank_pos = (0, 0)
-        # Conveyor belt click position
-        self.conveyor_pos = (0, 0)
-        # Bar dispenser click position
-        self.dispenser_pos = (0, 0)
-
-        # ── Minimap walk-to points ──
-        # These are minimap pixel positions to click for navigation
-        self.minimap_bank = (0, 0)
-        self.minimap_conveyor = (0, 0)
-        self.minimap_dispenser = (0, 0)
-
-        # ── Bank interface regions ──
+        # ── Bank interface ──
         self.bank_deposit_inv_btn = (0, 0)  # "Deposit inventory" button
-        self.bank_search_region = (0, 0, 0, 0)  # Search area bounds
-        self.bank_close_btn = (0, 0)
-
-        # ── Bar dispenser collection widget ──
-        self.bar_collect_btn = (0, 0)  # Click to collect all bars
-
-        # ── XP drops region (for verifying smelting) ──
-        self.xp_drop_region = (0, 0, 0, 0)
 
         # ── Bank grid (for bank tag slots) ──
         # Top-left corner of the first bank item slot and slot dimensions.
@@ -72,6 +45,11 @@ class ScreenRegions:
         self.bank_slot_w = 48
         self.bank_slot_h = 36
         self.bank_cols = 8
+
+        # ── Run orb ──
+        # Position of the run energy orb (near minimap).
+        # Used for checking run energy and stamina status.
+        self.run_orb_pos = (0, 0)
 
     def inv_slot_center(self, slot):
         """

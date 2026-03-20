@@ -91,26 +91,29 @@ class FurnaceHandler:
     def mark_coal_preloaded(self):
         self._coal_preloaded = True
 
-    # ── Navigation via minimap ──
+    # ── Navigation via color markers ──
+    # Instead of minimap (useless on mass worlds), click the RuneLite
+    # color-marked objects directly in the viewport. The character
+    # auto-walks to any object you left-click.
 
     def walk_to_bank(self):
-        """Click minimap to walk toward the bank chest."""
-        mx, my = self.regions.minimap_bank
-        mouse.click(mx, my, variance=3)
+        """Click the bank chest color marker to walk and interact."""
+        bx, by = self.finder.find_bank()
+        mouse.click(bx, by, variance=4)
         self.humanizer.walk_delay()
         self._wait_until_idle(timeout=6.0)
 
     def walk_to_conveyor(self):
-        """Click minimap to walk toward the conveyor belt."""
-        mx, my = self.regions.minimap_conveyor
-        mouse.click(mx, my, variance=3)
+        """Click the conveyor belt color marker to walk and interact."""
+        cx, cy = self.finder.find_conveyor()
+        mouse.click(cx, cy, variance=4)
         self.humanizer.walk_delay()
         self._wait_until_idle(timeout=6.0)
 
     def walk_to_dispenser(self):
-        """Click minimap to walk toward the bar dispenser."""
-        mx, my = self.regions.minimap_dispenser
-        mouse.click(mx, my, variance=3)
+        """Click the bar dispenser color marker to walk and interact."""
+        dx, dy = self.finder.find_dispenser()
+        mouse.click(dx, dy, variance=4)
         self.humanizer.walk_delay()
         self._wait_until_idle(timeout=6.0)
 
@@ -149,10 +152,9 @@ class FurnaceHandler:
 
     def ensure_run_enabled(self):
         """
-        Toggle run on if it's off. The run orb is near the minimap.
+        Toggle run on if it's off. Uses the calibrated run orb position.
         """
-        orb_x = self.regions.minimap_cx + 24
-        orb_y = self.regions.minimap_cy + 78
+        orb_x, orb_y = self.regions.run_orb_pos
         color = get_pixel_color(orb_x, orb_y)
 
         brightness = sum(color) / 3
@@ -328,11 +330,10 @@ class FurnaceHandler:
             items_before, coal_bag_slot, timeout=3.0
         )
 
-        # Fallback: if SPACE didn't register, try clicking the bar icon
+        # Fallback: if SPACE didn't register, try pressing SPACE again
         if collected == 0:
             self.humanizer.action_delay()
-            bx, by = self.regions.bar_collect_btn
-            mouse.click(bx, by, variance=3)
+            pyautogui.press("space")
 
             collected = self._poll_for_bars_in_inventory(
                 items_before, coal_bag_slot, timeout=2.0
@@ -362,10 +363,12 @@ class FurnaceHandler:
         """
         Poll for the collection dialogue to appear after clicking dispenser.
         Detects the dialogue by checking for the characteristic widget background
-        color in the expected region.
+        color at the center of the game viewport (where the widget appears).
         """
         start = time.time()
-        wx, wy = self.regions.bar_collect_btn
+        # The collection widget appears near the center of the viewport
+        wx = self.regions.game_x + self.regions.game_w // 2
+        wy = self.regions.game_y + self.regions.game_h // 2
         while time.time() - start < timeout:
             color = get_pixel_color(wx, wy)
             if color_matches(color, Colors.DISPENSER_WIDGET_BG, 25):

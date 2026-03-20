@@ -353,9 +353,8 @@ class BankHandler:
         if not self.settings.use_stamina:
             return
 
-        # Check run energy via the minimap orb area
-        orb_x = self.regions.minimap_cx + 24
-        orb_y = self.regions.minimap_cy + 78
+        # Check run energy via the calibrated run orb position
+        orb_x, orb_y = self.regions.run_orb_pos
         orb_color = get_pixel_color(orb_x, orb_y)
 
         # If stamina effect is active (bright orange/yellow orb), skip

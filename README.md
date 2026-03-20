@@ -38,50 +38,43 @@ pip install -r requirements.txt
 
 Requirements: `pyautogui`, `Pillow`, `mss`, `numpy`, `keyboard`
 
-### First Run — Calibration
+### RuneLite Object Markers
 
-```bash
-python main.py
-```
+Tag these 3 objects in RuneLite's Object Markers plugin with these ARGB colors:
 
-On first run (or with `--calibrate`), the setup wizard walks you through clicking key positions on your game screen:
+| Object | Color | ARGB Hex |
+|--------|-------|----------|
+| Bank chest | Blue | `FF0000FF` |
+| Conveyor belt | Magenta | `FFFF00FF` |
+| Bar dispenser | Lime green | `FF00FF00` |
 
-1. **Game viewport** corners
-2. **Inventory** first and last slot centers
-3. **Minimap** center
-4. **Bank chest**, **conveyor belt**, **bar dispenser** positions
-5. **Minimap navigation** points for walking between locations
-6. **Bank interface** buttons (deposit, search, close)
-7. **Bar collection widget** button
-
-Positions are saved to `calibration.json` — you only recalibrate if you resize or move the client.
+The bot finds objects by these colors — no minimap or position calibration needed.
 
 ### Before Starting
 
 1. OSRS client open and logged in
-2. Standing at the Blast Furnace in Keldagrim (World 352/355/358/386/387)
+2. Standing at the Blast Furnace in Keldagrim (mass world)
 3. **Gold deposited in the coffer** (72,000 GP/hr for dwarven workers)
 4. Ores and coal in your bank
 5. Coal bag in your inventory (if using — it stays in a locked slot)
 6. Ice gloves / Goldsmith gauntlets in bank or equipped
 7. Stamina potions in bank (optional)
+8. **Object Markers** set up (see above)
 
 ### Run
 
 ```bash
-python main.py              # Normal start
-python main.py --calibrate  # Force recalibration
-python main.py --help       # Show help
+python main.py
 ```
 
-The bot will ask you to:
-- Select bar type
-- Toggle coal bag (with slot selection)
-- Toggle stamina potions (on/off)
-- Toggle goldsmith gauntlets (gold only)
-- Toggle ice gloves
-- Set emergency stop key (default: F6)
+The GUI opens. On first run, click **Calibrate** — only 7 mouse positions needed:
+1. Game viewport (2 corners)
+2. Inventory (2 slots)
+3. Bank deposit button
+4. Bank grid first slot
+5. Run orb
 
+Then select your bar type, toggle options, and hit **Start**.
 Press **F6** (or your chosen key) at any time to stop.
 
 ## Architecture
@@ -103,13 +96,15 @@ blast_furnace/
 │   ├── inventory.py            # Inventory slot reading
 │   ├── coal_bag.py             # Coal bag with locked slot
 │   ├── bank.py                 # Bank open/deposit/withdraw/search
+│   ├── object_finder.py        # RuneLite color marker detection
 │   └── furnace.py              # Conveyor, dispenser, glove swapping
 ├── data/
 │   └── bars.py                 # All bar types and ore definitions
 ├── anti_detect/
 │   └── humanizer.py            # Fatigue, timing, micro-breaks
 └── ui/
-    └── setup_wizard.py         # Screen calibration wizard
+    ├── gui.py                  # Tkinter GUI (settings, log, controls)
+    └── setup_wizard.py         # Minimal screen calibration (7 clicks)
 ```
 
 ## State Machine

@@ -15,11 +15,8 @@ These colors never appear naturally in the Blast Furnace environment
 (dark browns, greys, orange lava). False positive rate is near zero
 with a tight tolerance.
 
-Why this is better than fixed coordinates:
-  - Camera-proof: overlay moves with the object
-  - Position-proof: works regardless of where the object renders
-  - Self-correcting: if a click misses, next scan still finds it
-  - No recalibration needed after camera bumps or random events
+No fallback positions needed — if the marker isn't found, the object
+is off-screen and the bot should wait or adjust camera.
 """
 
 import numpy as np
@@ -41,9 +38,6 @@ class ObjectFinder:
     """
     Locates RuneLite-tagged objects in the game viewport by scanning
     for their marker color and returning the centroid.
-
-    Falls back to calibrated fixed positions if the marker is not found
-    (e.g., object is off-screen, plugin disabled, or marker occluded).
     """
 
     def __init__(self, regions: ScreenRegions):
@@ -55,39 +49,38 @@ class ObjectFinder:
         self._cache = {}
 
     def find_bank(self):
-        """Find the bank chest (red marker). Returns (x, y) or None."""
-        return self._find_object("bank", MARKER_BANK, self.regions.bank_pos)
+        """Find the bank chest (blue marker). Returns (x, y) or None."""
+        return self._find_object("bank", MARKER_BANK)
 
     def find_conveyor(self):
-        """Find the conveyor belt (yellow marker). Returns (x, y) or None."""
-        return self._find_object("conveyor", MARKER_CONVEYOR, self.regions.conveyor_pos)
+        """Find the conveyor belt (magenta marker). Returns (x, y) or None."""
+        return self._find_object("conveyor", MARKER_CONVEYOR)
 
     def find_dispenser(self):
-        """Find the bar dispenser (magenta marker). Returns (x, y) or None."""
-        return self._find_object("dispenser", MARKER_DISPENSER, self.regions.dispenser_pos)
+        """Find the bar dispenser (lime green marker). Returns (x, y) or None."""
+        return self._find_object("dispenser", MARKER_DISPENSER)
 
-    def _find_object(self, name, marker_color, fallback_pos):
+    def _find_object(self, name, marker_color):
         """
         Find an object by its marker color in the game viewport.
 
         Strategy:
-        1. Quick check: scan a small area around the cached/fallback position.
+        1. Quick check: scan a small area around the cached position.
            If found, update cache and return immediately.
         2. Full scan: scan the entire game viewport.
            If found, update cache and return.
-        3. Fallback: return the calibrated fixed position.
-           This handles plugin-disabled or object-off-screen cases.
+        3. Return None if not found (object is off-screen).
 
-        Returns (x, y) screen coordinates of the object centroid.
+        Returns (x, y) screen coordinates of the object centroid, or None.
         """
-        # Use cached position or fallback as the starting search center
-        search_center = self._cache.get(name, fallback_pos)
+        cached = self._cache.get(name)
 
-        # Step 1: Quick local scan (~80x80 area around expected position)
-        result = self._scan_area(marker_color, search_center, radius=40)
-        if result is not None:
-            self._cache[name] = result
-            return result
+        # Step 1: Quick local scan (~80x80 area around cached position)
+        if cached is not None:
+            result = self._scan_area(marker_color, cached, radius=40)
+            if result is not None:
+                self._cache[name] = result
+                return result
 
         # Step 2: Full viewport scan
         result = self._scan_viewport(marker_color)
@@ -95,8 +88,11 @@ class ObjectFinder:
             self._cache[name] = result
             return result
 
-        # Step 3: Fallback to calibrated position
-        return fallback_pos
+        # Not found — return cached position as best guess, or viewport center
+        if cached is not None:
+            return cached
+        return (self.regions.game_x + self.regions.game_w // 2,
+                self.regions.game_y + self.regions.game_h // 2)
 
     def _scan_area(self, color, center, radius=40):
         """Scan a small area around a center point for the marker color."""
