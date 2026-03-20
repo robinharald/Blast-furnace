@@ -37,6 +37,7 @@ from screen.capture import (
     region_has_color, get_pixel_color_from_frame,
 )
 from game.inventory import InventoryReader
+from game.object_finder import ObjectFinder
 from input import mouse
 from anti_detect.humanizer import Humanizer
 from data.bars import BarType
@@ -45,6 +46,7 @@ from data.bars import BarType
 class FurnaceHandler:
     """
     All furnace-area interactions: conveyor belt, bar dispenser, navigation.
+    Uses RuneLite Object Markers to find objects dynamically.
     """
 
     def __init__(self, regions: ScreenRegions, settings: BotSettings,
@@ -54,6 +56,7 @@ class FurnaceHandler:
         self.inventory = inventory
         self.coal_bag = coal_bag  # Can be None if not using coal bag
         self.humanizer = humanizer
+        self.finder = ObjectFinder(regions)
 
         # Whether we've primed the furnace (first trip has no bars to collect)
         self._primed = False
@@ -163,8 +166,9 @@ class FurnaceHandler:
         """
         Click the conveyor belt. Left-click = "Put-ore-on".
         Deposits all ores/coal from inventory onto the belt.
+        Finds the conveyor via RuneLite yellow marker.
         """
-        cx, cy = self.regions.conveyor_pos
+        cx, cy = self.finder.find_conveyor()
         mouse.click(cx, cy, variance=4)
         self.humanizer.reaction_delay()
 
@@ -265,9 +269,10 @@ class FurnaceHandler:
         - Cooled: bars ready and cooled, "Take" option available
 
         We detect the Hot/Cooled state by checking for a visual glow or
-        color change around the dispenser.
+        color change around the dispenser. Uses the dynamically-found
+        dispenser position.
         """
-        dx, dy = self.regions.dispenser_pos
+        dx, dy = self.finder.find_dispenser()
         frame = capture_region(dx - 25, dy - 25, 50, 50)
         offset = (dx - 25, dy - 25)
 
@@ -280,9 +285,9 @@ class FurnaceHandler:
     def click_dispenser(self):
         """
         Click the bar dispenser. Left-click = "Take" when bars are ready.
-        When empty or pouring, clicking does nothing useful.
+        Finds the dispenser via RuneLite magenta marker.
         """
-        dx, dy = self.regions.dispenser_pos
+        dx, dy = self.finder.find_dispenser()
         mouse.click(dx, dy, variance=4)
         self.humanizer.reaction_delay()
 

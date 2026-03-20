@@ -30,6 +30,7 @@ from screen.capture import (
     find_color_in_region,
 )
 from game.inventory import InventoryReader
+from game.object_finder import ObjectFinder
 from input import mouse
 from anti_detect.humanizer import Humanizer
 from data.bars import BarType, COAL_COLOR
@@ -38,6 +39,7 @@ from data.bars import BarType, COAL_COLOR
 class BankHandler:
     """
     All bank-related interactions.
+    Uses RuneLite Object Markers to find the bank chest dynamically.
     """
 
     def __init__(self, regions: ScreenRegions, settings: BotSettings,
@@ -47,6 +49,7 @@ class BankHandler:
         self.inventory = inventory
         self.coal_bag = coal_bag  # Can be None if not using coal bag
         self.humanizer = humanizer
+        self.finder = ObjectFinder(regions)
 
         # Trip counter for coal-loading cycles.
         # Tracks how many coal trips have been completed in the current cycle.
@@ -95,7 +98,7 @@ class BankHandler:
         if self.is_bank_open():
             return True
 
-        bx, by = self.regions.bank_pos
+        bx, by = self.finder.find_bank()
         mouse.click(bx, by, variance=4)
         self.humanizer.reaction_delay()
 

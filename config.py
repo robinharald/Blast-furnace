@@ -187,6 +187,13 @@ class Colors:
     RUN_ORB_ACTIVE = (200, 200, 50)     # Yellow when run is on
     STAMINA_ACTIVE = (230, 150, 30)     # Orange stamina effect
 
+    # ── RuneLite Object Markers ──
+    # Player tags these objects in RuneLite's Object Markers plugin.
+    # Unique saturated colors that never appear in the BF environment.
+    MARKER_BANK = (255, 0, 0)           # Red — bank chest
+    MARKER_CONVEYOR = (255, 255, 0)     # Yellow — conveyor belt
+    MARKER_DISPENSER = (255, 0, 255)    # Magenta — bar dispenser
+
     # ── Chat/action indicators ──
     IDLE_INDICATOR = (0, 0, 0)          # Placeholder
 
