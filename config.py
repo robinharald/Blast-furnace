@@ -64,6 +64,15 @@ class ScreenRegions:
         # ── XP drops region (for verifying smelting) ──
         self.xp_drop_region = (0, 0, 0, 0)
 
+        # ── Bank grid (for bank tag slots) ──
+        # Top-left corner of the first bank item slot and slot dimensions.
+        # Bank uses 8 columns. Calibrated by wizard.
+        self.bank_grid_x = 0
+        self.bank_grid_y = 0
+        self.bank_slot_w = 48
+        self.bank_slot_h = 36
+        self.bank_cols = 8
+
     def inv_slot_center(self, slot):
         """
         Get the screen center of inventory slot (0-27).
@@ -74,6 +83,17 @@ class ScreenRegions:
         row = slot // self.inv_cols
         x = self.inv_x + col * self.inv_slot_w + self.inv_slot_w // 2
         y = self.inv_y + row * self.inv_slot_h + self.inv_slot_h // 2
+        return (x, y)
+
+    def bank_slot_center(self, slot):
+        """
+        Get the screen center of a bank grid slot (0-indexed).
+        Used for clicking items in the bank tag tab at known positions.
+        """
+        col = slot % self.bank_cols
+        row = slot // self.bank_cols
+        x = self.bank_grid_x + col * self.bank_slot_w + self.bank_slot_w // 2
+        y = self.bank_grid_y + row * self.bank_slot_h + self.bank_slot_h // 2
         return (x, y)
 
     def inv_slot_region(self, slot):
@@ -114,6 +134,16 @@ class BotSettings:
         # Never active at the same time as coal bag.
         # This slot must be deposit-locked in-game so "Deposit inventory" skips it.
         self.glove_slot = 0  # Same slot as coal bag — only one is ever active
+
+        # ── Bank tag layout ──
+        # Items are in a RuneLite bank tag tab with fixed positions.
+        # Positions are 0-indexed slot numbers within the bank tag grid.
+        # Bank slots use same layout as inventory: 8 columns, top-to-bottom.
+        # Set to None if item is not in the tag (e.g., coal for gold bars).
+        self.bank_tag_coal_slot = 0       # Coal position in bank tag
+        self.bank_tag_ore_slot = 1        # Primary ore position
+        self.bank_tag_secondary_ore_slot = None  # Secondary ore (bronze only)
+        self.bank_tag_stamina_slot = 2    # Stamina potion position
 
         # Emergency stop key
         self.stop_key = "f6"

@@ -4,19 +4,20 @@ Bank interaction handler.
 Handles:
 - Opening the bank chest by clicking the calibrated position
 - Detecting when the bank interface is open (via color checks)
-- Depositing inventory (except coal bag)
-- Withdrawing specific items by finding them via bank search
+- Depositing inventory (locked slots skipped by game)
+- Withdrawing ores/coal from RuneLite bank tag with fixed slot positions
 - Stamina potion management
 - Closing the bank
 
 Blast Furnace bank specifics:
 - The bank is a "Bank chest" (not a booth), left-click "Use"
+- Bank opens directly on a RuneLite bank tag tab with items at known positions
+- No bank search needed — click the ore/coal directly at its fixed slot
 - "Deposit inventory" button deposits all UNLOCKED slots
 - OSRS native deposit locks (per-slot) protect coal bag and gloves
-  The player must pre-lock the relevant slot in-game.
-  Locked slots are SKIPPED by "Deposit inventory" — no re-withdrawal needed.
-- Bank search: click magnifying glass, type name, items filter instantly
-- Must clear search between different item lookups (click X or clear field)
+- Coal bag fill: click coal bag in inventory (while bank is open) = "Fill"
+  Visually verified by checking if bank coal quantity text changed
+- Bank quantity button must be set to "All" for single-click ore withdrawal
 - Bank chest has 1 extra tick delay vs banker NPC interaction
 """
 
@@ -145,29 +146,6 @@ class BankHandler:
 
         return True
 
-    def _bank_search(self, term):
-        """
-        Type a search term into the bank search box.
-        Assumes bank is open. Clicks the search icon, clears any previous
-        search, then types the new term.
-        """
-        # Click search button (magnifying glass at bottom of bank)
-        sx, sy, sw, sh = self.regions.bank_search_region
-        mouse.click(sx + sw // 2, sy + sh // 2, variance=2)
-        self.humanizer.action_delay()
-
-        # Clear any existing search text with Ctrl+A then type new term
-        pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.05)
-        pyautogui.typewrite(term, interval=0.04 + 0.02 * self.humanizer._base_speed)
-        self.humanizer.bank_delay()
-
-    def _click_first_bank_slot(self):
-        """Click the first visible bank slot (for search results)."""
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
-        mouse.click(bx, by, variance=3)
-
     def withdraw_ore(self, bar_type: BarType):
         """
         Withdraw the correct ores for the current bar type and trip cycle.
@@ -190,17 +168,40 @@ class BankHandler:
         else:
             return self._withdraw_simple_ore(bar_type)
 
+    def _click_bank_tag_slot(self, bank_slot):
+        """
+        Click a specific bank tag slot to withdraw from it.
+        Assumes bank quantity is set to "All" (left-click = withdraw all).
+        The player must configure this in the bank settings before starting.
+        """
+        bx, by = self.regions.bank_slot_center(bank_slot)
+        mouse.click(bx, by, variance=3)
+
+    def _withdraw_x_from_bank_tag(self, bank_slot, amount):
+        """Right-click a bank tag slot and withdraw a specific amount."""
+        bx, by = self.regions.bank_slot_center(bank_slot)
+
+        if amount == 1:
+            # Single left-click if quantity is set to 1, otherwise right-click
+            mouse.click(bx, by, variance=2)
+        else:
+            mouse.right_click(bx, by, variance=2)
+            self.humanizer.action_delay()
+            # "Withdraw-X" in right-click menu (~90px down)
+            mouse.click(bx, by + 90, variance=2)
+            self.humanizer.action_delay()
+            pyautogui.typewrite(str(amount), interval=0.05)
+            pyautogui.press("enter")
+        self.humanizer.action_delay()
+
     def _withdraw_simple_ore(self, bar_type: BarType):
         """
         Withdraw a full inventory of a single ore type (iron, silver, gold).
-        Simple bars always trigger smelting.
+        Clicks the ore's fixed position in the bank tag tab.
         """
         self._next_is_ore_trip = True
 
-        ore_name = bar_type.data.ore.primary_ore
-        self._bank_search(ore_name)
-        self.humanizer.bank_delay()
-        self._withdraw_all_from_first_slot()
+        self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
         self.humanizer.action_delay()
         return True
 
@@ -216,14 +217,10 @@ class BankHandler:
         # Determine amounts: coal bag takes 1 slot
         amount_each = 13 if has_bag else 14
 
-        self._bank_search(bar_type.data.ore.primary_ore)
-        self.humanizer.bank_delay()
-        self._withdraw_x_from_first_slot(amount_each)
+        self._withdraw_x_from_bank_tag(self.settings.bank_tag_ore_slot, amount_each)
         self.humanizer.action_delay()
 
-        self._bank_search(bar_type.data.ore.secondary_ore)
-        self.humanizer.bank_delay()
-        self._withdraw_x_from_first_slot(amount_each)
+        self._withdraw_x_from_bank_tag(self.settings.bank_tag_secondary_ore_slot, amount_each)
         self.humanizer.action_delay()
         return True
 
@@ -284,14 +281,14 @@ class BankHandler:
         has_bag = self.settings.use_coal_bag and self.coal_bag is not None
 
         if has_bag:
-            # Search for coal first so the bank displays it (needed for verification)
-            self._bank_search("Coal")
-            self.humanizer.bank_delay()
-
-            # Set coal position for visual verification of bag fill
-            bx = self.regions.game_x + self.regions.game_w // 2 - 150
-            by = self.regions.game_y + 115
-            self.coal_bag.set_bank_coal_pos(bx, by)
+            # Set coal's bank tag position for visual verification of bag fill.
+            # When the coal bag is clicked in inventory (while bank is open),
+            # it pulls coal from the bank. We verify by checking if the bank's
+            # coal quantity text pixels changed.
+            coal_bx, coal_by = self.regions.bank_slot_center(
+                self.settings.bank_tag_coal_slot
+            )
+            self.coal_bag.set_bank_coal_pos(coal_bx, coal_by)
 
             # Fill coal bag — visually verified (retries if click doesn't register)
             if not self.coal_bag.fill():
@@ -302,9 +299,7 @@ class BankHandler:
                 # STEEL SPECIAL CASE: every trip is ore + coal bag
                 # 27 ore in inventory + 27 coal in bag = perfect 1:1 ratio
                 self._next_is_ore_trip = True
-                self._bank_search(bar_type.data.ore.primary_ore)
-                self.humanizer.bank_delay()
-                self._withdraw_all_from_first_slot()
+                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
                 self.humanizer.action_delay()
                 return True
 
@@ -314,18 +309,14 @@ class BankHandler:
             if self._coal_trip < coal_trips_needed:
                 # COAL-ONLY TRIP
                 self._next_is_ore_trip = False
-                self._bank_search("Coal")
-                self.humanizer.bank_delay()
-                self._withdraw_all_from_first_slot()
+                self._click_bank_tag_slot(self.settings.bank_tag_coal_slot)
                 self._coal_trip += 1
                 self.humanizer.action_delay()
                 return True
             else:
                 # ORE TRIP
                 self._next_is_ore_trip = True
-                self._bank_search(bar_type.data.ore.primary_ore)
-                self.humanizer.bank_delay()
-                self._withdraw_all_from_first_slot()
+                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
                 self._coal_trip = 0
                 self.humanizer.action_delay()
                 return True
@@ -334,16 +325,12 @@ class BankHandler:
             if self._coal_trip < coal_per_bar:
                 # COAL TRIP
                 self._next_is_ore_trip = False
-                self._bank_search("Coal")
-                self.humanizer.bank_delay()
-                self._withdraw_all_from_first_slot()
+                self._click_bank_tag_slot(self.settings.bank_tag_coal_slot)
                 self._coal_trip += 1
             else:
                 # ORE TRIP
                 self._next_is_ore_trip = True
-                self._bank_search(bar_type.data.ore.primary_ore)
-                self.humanizer.bank_delay()
-                self._withdraw_all_from_first_slot()
+                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
                 self._coal_trip = 0
             self.humanizer.action_delay()
             return True
@@ -377,21 +364,21 @@ class BankHandler:
         if brightness > 120:
             return
 
-        # Need stamina — search for it in bank
+        # Need stamina — withdraw from bank tag slot
         if not self.is_bank_open():
             return
 
-        self._bank_search("Stamina")
-        self.humanizer.bank_delay()
+        if self.settings.bank_tag_stamina_slot is None:
+            return  # No stamina slot configured
 
-        # Check if stamina exists in bank
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
-        color = get_pixel_color(bx, by)
+        # Check if stamina exists at its bank tag position
+        sx, sy = self.regions.bank_slot_center(self.settings.bank_tag_stamina_slot)
+        color = get_pixel_color(sx, sy)
         if color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE):
             return  # No stamina potions in bank
 
-        self._withdraw_x_from_first_slot(1)
+        # Click to withdraw 1 (default left-click quantity should be set to 1)
+        mouse.click(sx, sy, variance=3)
         self.humanizer.action_delay()
 
         # Close bank to drink
@@ -424,18 +411,14 @@ class BankHandler:
 
     def has_supplies(self, bar_type: BarType):
         """
-        Quick check if the bank has the required ores.
-        Searches bank and checks if results appear.
+        Quick check if the bank tag tab has the required ores.
+        Checks the known slot positions for non-empty colors.
         """
         if not self.is_bank_open():
             return False
 
-        # Check primary ore
-        self._bank_search(bar_type.data.ore.primary_ore)
-        self.humanizer.bank_delay()
-
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
+        # Check primary ore at its bank tag position
+        bx, by = self.regions.bank_slot_center(self.settings.bank_tag_ore_slot)
         color = get_pixel_color(bx, by)
         has_ore = not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
 
@@ -444,17 +427,14 @@ class BankHandler:
 
         # Check coal if needed
         if bar_type.data.requires_coal:
-            self._bank_search("Coal")
-            self.humanizer.bank_delay()
-            color = get_pixel_color(bx, by)
-            has_coal = not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
-            return has_coal
+            cx, cy = self.regions.bank_slot_center(self.settings.bank_tag_coal_slot)
+            color = get_pixel_color(cx, cy)
+            return not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
 
         # Check secondary ore if needed (bronze)
-        if bar_type.data.ore.has_two_ores:
-            self._bank_search(bar_type.data.ore.secondary_ore)
-            self.humanizer.bank_delay()
-            color = get_pixel_color(bx, by)
+        if bar_type.data.ore.has_two_ores and self.settings.bank_tag_secondary_ore_slot is not None:
+            sx, sy = self.regions.bank_slot_center(self.settings.bank_tag_secondary_ore_slot)
+            color = get_pixel_color(sx, sy)
             return not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
 
         return True
@@ -467,32 +447,3 @@ class BankHandler:
         """Get current coal trip counter."""
         return self._coal_trip
 
-    def _withdraw_all_from_first_slot(self):
-        """Right-click first bank slot and select 'Withdraw-All'."""
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
-
-        mouse.right_click(bx, by, variance=2)
-        self.humanizer.action_delay()
-
-        # "Withdraw-All" is typically the 5th menu option (~75px down)
-        mouse.click(bx, by + 75, variance=2)
-        self.humanizer.action_delay()
-
-    def _withdraw_x_from_first_slot(self, amount):
-        """Right-click and withdraw a specific amount."""
-        bx = self.regions.game_x + self.regions.game_w // 2 - 150
-        by = self.regions.game_y + 115
-
-        if amount == 1:
-            # Left-click withdraws 1 by default
-            mouse.click(bx, by, variance=2)
-        else:
-            mouse.right_click(bx, by, variance=2)
-            self.humanizer.action_delay()
-            # "Withdraw-X" is typically the 6th menu option (~90px down)
-            mouse.click(bx, by + 90, variance=2)
-            self.humanizer.action_delay()
-            pyautogui.typewrite(str(amount), interval=0.05)
-            pyautogui.press("enter")
-        self.humanizer.action_delay()
