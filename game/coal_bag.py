@@ -78,14 +78,22 @@ class CoalBagManager:
 
         self._coal_count = self.CAPACITY
 
-    def empty_at_conveyor(self):
+    def empty_at_conveyor(self, free_slots=27):
         """
         Empty the coal bag when NOT in the bank interface.
 
         When the bank is closed, LEFT-CLICK on the coal bag = "Empty".
         This dumps coal into inventory. Then click conveyor to deposit it.
 
-        Returns True if bag was emptied.
+        Coal bag holds 27. With 1 locked slot (coal bag itself), 27 slots are free.
+        All 27 coal empty perfectly — no residual.
+        (Gold bars use glove slot instead of coal bag, so this is only for coal bars.)
+
+        Args:
+            free_slots: Number of free inventory slots. Defaults to 27
+                        (28 total - coal bag slot). Override if inventory isn't empty.
+
+        Returns True if bag was emptied (even partially).
         """
         if self._coal_count <= 0:
             return False
@@ -99,7 +107,10 @@ class CoalBagManager:
 
         # Brief wait for coal to appear in inventory
         time.sleep(0.3)
-        self._coal_count = 0
+
+        # Track residual: bag had 27 but only 26 slots free → 1 remains
+        emptied = min(self._coal_count, free_slots)
+        self._coal_count = max(0, self._coal_count - emptied)
         return True
 
     def is_bag_present(self):

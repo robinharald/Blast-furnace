@@ -3,6 +3,8 @@ Inventory reading and management via pixel/color detection.
 
 Reads inventory slot states by sampling pixel colors at known positions.
 No injection — purely visual.
+
+Slots are 1-based (1-28) matching the in-game numbering.
 """
 
 import time
@@ -11,10 +13,16 @@ from screen.capture import capture_region, color_matches, get_pixel_color_from_f
 from input import mouse
 from anti_detect.humanizer import Humanizer
 
+# Inventory constants
+FIRST_SLOT = 1
+LAST_SLOT = 28
+TOTAL_SLOTS = 28
+
 
 class InventoryReader:
     """
     Reads inventory state by analyzing pixel colors in each slot.
+    All slot references are 1-based (1-28).
     """
 
     def __init__(self, regions: ScreenRegions, humanizer: Humanizer):
@@ -30,7 +38,7 @@ class InventoryReader:
         return capture_region(x, y, w, h), (x, y)
 
     def is_slot_empty(self, slot, frame=None, offset=(0, 0)):
-        """Check if an inventory slot appears empty."""
+        """Check if an inventory slot appears empty. Slot is 1-based."""
         cx, cy = self.regions.inv_slot_center(slot)
 
         if frame is not None:
@@ -42,11 +50,11 @@ class InventoryReader:
         return color_matches(color, Colors.INV_EMPTY_SLOT, COLOR_TOLERANCE)
 
     def is_slot_filled(self, slot, frame=None, offset=(0, 0)):
-        """Check if an inventory slot has an item."""
+        """Check if an inventory slot has an item. Slot is 1-based."""
         return not self.is_slot_empty(slot, frame, offset)
 
     def slot_has_color(self, slot, target_color, tolerance=20, frame=None, offset=(0, 0)):
-        """Check if a slot contains an item matching the target color."""
+        """Check if a slot contains an item matching the target color. Slot is 1-based."""
         cx, cy = self.regions.inv_slot_center(slot)
 
         if frame is not None:
@@ -58,10 +66,10 @@ class InventoryReader:
         return color_matches(color, target_color, tolerance)
 
     def count_filled_slots(self, exclude_slot=None):
-        """Count how many inventory slots have items."""
+        """Count how many inventory slots have items. Slots 1-28."""
         frame, offset = self._capture_inventory()
         count = 0
-        for slot in range(28):
+        for slot in range(FIRST_SLOT, LAST_SLOT + 1):
             if slot == exclude_slot:
                 continue
             if self.is_slot_filled(slot, frame, offset):
@@ -72,7 +80,7 @@ class InventoryReader:
         """Count slots containing items matching a specific color."""
         frame, offset = self._capture_inventory()
         count = 0
-        for slot in range(28):
+        for slot in range(FIRST_SLOT, LAST_SLOT + 1):
             if slot == exclude_slot:
                 continue
             if self.slot_has_color(slot, target_color, tolerance, frame, offset):
@@ -80,9 +88,9 @@ class InventoryReader:
         return count
 
     def find_first_slot_with_color(self, target_color, tolerance=25, exclude_slot=None):
-        """Find the first slot containing an item of the given color."""
+        """Find the first slot containing an item of the given color. Returns 1-based slot."""
         frame, offset = self._capture_inventory()
-        for slot in range(28):
+        for slot in range(FIRST_SLOT, LAST_SLOT + 1):
             if slot == exclude_slot:
                 continue
             if self.slot_has_color(slot, target_color, tolerance, frame, offset):
@@ -90,15 +98,15 @@ class InventoryReader:
         return None
 
     def is_inventory_empty(self, exclude_slot=None):
-        """Check if inventory is empty (excluding coal bag slot)."""
+        """Check if inventory is empty (excluding locked slot)."""
         return self.count_filled_slots(exclude_slot=exclude_slot) == 0
 
     def is_inventory_full(self, exclude_slot=None):
-        """Check if inventory is full."""
+        """Check if inventory is full (27 items + 1 locked slot)."""
         return self.count_filled_slots(exclude_slot=exclude_slot) >= 27
 
     def click_slot(self, slot, action="left"):
-        """Click an inventory slot with humanized movement."""
+        """Click an inventory slot with humanized movement. Slot is 1-based."""
         x, y = self.regions.inv_slot_center(slot)
         x, y = self.humanizer.jitter_position(x, y, radius=4)
         if action == "left":
@@ -111,9 +119,10 @@ class InventoryReader:
         """
         Get a full snapshot of inventory state.
         Returns list of 28 booleans (True = filled, False = empty).
+        Index 0 = slot 1, index 27 = slot 28.
         """
         frame, offset = self._capture_inventory()
         return [
-            self.is_slot_filled(i, frame, offset) if i != exclude_slot else True
-            for i in range(28)
+            self.is_slot_filled(slot, frame, offset) if slot != exclude_slot else True
+            for slot in range(FIRST_SLOT, LAST_SLOT + 1)
         ]

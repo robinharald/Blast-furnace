@@ -66,19 +66,22 @@ class ScreenRegions:
 
     def inv_slot_center(self, slot):
         """
-        Get the screen center of inventory slot (0-27).
-        Slots are numbered left-to-right, top-to-bottom.
+        Get the screen center of inventory slot.
+        Slots are 1-based (1-28) as shown in-game, converted to 0-based internally.
+        Numbered left-to-right, top-to-bottom.
         """
-        col = slot % self.inv_cols
-        row = slot // self.inv_cols
+        idx = slot - 1  # Convert 1-based to 0-based
+        col = idx % self.inv_cols
+        row = idx // self.inv_cols
         x = self.inv_x + col * self.inv_slot_w + self.inv_slot_w // 2
         y = self.inv_y + row * self.inv_slot_h + self.inv_slot_h // 2
         return (x, y)
 
     def inv_slot_region(self, slot):
-        """Get the bounding box (x1, y1, x2, y2) of an inventory slot."""
-        col = slot % self.inv_cols
-        row = slot // self.inv_cols
+        """Get the bounding box (x1, y1, x2, y2) of an inventory slot (1-based)."""
+        idx = slot - 1  # Convert 1-based to 0-based
+        col = idx % self.inv_cols
+        row = idx // self.inv_cols
         x1 = self.inv_x + col * self.inv_slot_w + 4
         y1 = self.inv_y + row * self.inv_slot_h + 4
         x2 = x1 + self.inv_slot_w - 8
@@ -101,14 +104,16 @@ class BotSettings:
         self.use_goldsmith_gauntlets = True
         self.use_ice_gloves = True
 
-        # Coal bag locked inventory slot (0-27)
-        self.coal_bag_slot = 0
+        # Coal bag locked inventory slot (1-28)
+        # Used for coal-requiring bars (steel/mithril/adamant/rune). Not used for gold.
+        self.coal_bag_slot = 1
 
-        # Glove swap locked inventory slot (0-27)
-        # The unequipped pair of gloves sits here. Click to swap.
-        # Only used when both goldsmith + ice gloves are in play,
-        # or when ice gloves alone are carried.
-        self.glove_slot = 1
+        # Glove swap locked inventory slot (1-28)
+        # Used for gold bars only (goldsmith gauntlets <-> ice gloves swap).
+        # Coal bars don't need a glove slot — only ice gloves are used
+        # and they stay equipped (no swapping needed).
+        # Never active at the same time as coal bag.
+        self.glove_slot = 1  # Same slot as coal bag — only one is ever active
 
         # Emergency stop key
         self.stop_key = "f6"

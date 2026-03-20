@@ -119,19 +119,17 @@ class BankHandler:
 
         return not self.is_bank_open()
 
-    def deposit_all_except_coal_bag(self):
+    def deposit_all_except_locked(self):
         """
-        Deposit entire inventory except the coal bag.
+        Deposit entire inventory, then re-withdraw locked items.
 
-        Strategy: Click the "Deposit inventory" button (deposits everything),
-        then immediately re-withdraw items that must stay:
-        - Coal bag (if using)
-        - Ice gloves (if using — they were in inventory, now deposited)
+        "Deposit inventory" button deposits EVERYTHING. We re-withdraw:
+        - Coal bag: for coal-requiring bars (steel/mithril/adamant/rune)
+        - Gloves: for gold bars (goldsmith <-> ice gloves swap)
 
-        Note: The equipped gloves stay equipped (deposit-inventory only
-        affects inventory, not equipment). But the OTHER pair of gloves
-        (the one that was in inventory) gets deposited and must be
-        re-withdrawn.
+        These are NEVER both active at the same time:
+        - Gold bars: no coal bag needed, only glove slot
+        - Coal bars: coal bag needed, no glove slot (ice gloves stay equipped)
         """
         if not self.is_bank_open():
             return False
@@ -142,24 +140,15 @@ class BankHandler:
         self.humanizer.action_delay()
         self.humanizer.action_delay()
 
+        # Re-withdraw locked items based on bar type
         if self.settings.use_coal_bag and self.coal_bag is not None:
-            # Coal bag was deposited too — withdraw it back
+            # Coal bars: re-withdraw coal bag (gloves not in inventory)
             self._withdraw_coal_bag()
-
-        # Re-withdraw gloves that were in the locked glove slot (now deposited).
-        # One pair is always equipped (stays), the other was in the locked slot (deposited).
-        # We need BOTH pairs: one equipped, one in inventory for swapping.
-        #
-        # After collecting bars: ice gloves equipped, goldsmith deposited → re-withdraw.
-        # After first trip: goldsmith equipped, ice gloves deposited → re-withdraw.
-        # Either way: whichever pair is in the bank, withdraw it.
-        if self.settings.use_ice_gloves or self.settings.use_goldsmith_gauntlets:
-            if self.settings.use_goldsmith_gauntlets and self.settings.use_ice_gloves:
-                # Both in play: try both, only the deposited one will be in bank
-                self._withdraw_item("Goldsmith gauntlets")
-                self._withdraw_item("Ice gloves")
-            elif self.settings.use_ice_gloves:
-                self._withdraw_item("Ice gloves")
+        elif self.settings.use_goldsmith_gauntlets and self.settings.use_ice_gloves:
+            # Gold bars: re-withdraw the unequipped pair of gloves
+            # One pair is equipped (stays), the other was deposited
+            self._withdraw_item("Goldsmith gauntlets")
+            self._withdraw_item("Ice gloves")
 
         return True
 

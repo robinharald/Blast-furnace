@@ -215,7 +215,7 @@ class BlastFurnaceStateMachine:
             return
 
         # ── Deposit inventory (bars from previous trip + any leftovers) ──
-        self.bank.deposit_all_except_coal_bag()
+        self.bank.deposit_all_except_locked()
         self.humanizer.bank_delay()
 
         # ── Stamina ──
@@ -321,16 +321,31 @@ class BlastFurnaceStateMachine:
         The dispenser has bars from the last ore trip that smelted while
         we were banking. Walk to dispenser, swap to ice gloves, collect.
 
+        GOLD BAR TIMING: When using goldsmith gauntlets, we must wait for
+        the XP drop (~2 game ticks after depositing) before swapping to
+        ice gloves. If we swap too early, the gold ore smelts without the
+        gauntlets bonus. The walk to the dispenser provides this delay naturally,
+        but we add a small extra wait for safety.
+
         The new ore smelts while we do this + walk to bank + bank.
         """
         print(f"  [{self.stats.elapsed_formatted}] Collecting previous bars "
               f"at dispenser...")
 
-        # Walk to dispenser (close to conveyor)
+        # GOLD BAR XP DROP TIMING:
+        # Must wait for XP drop from newly deposited gold before swapping gloves.
+        # The XP drop happens ~2 ticks (1.2s) after ore reaches the melting pot.
+        # Walking to dispenser takes ~2-3 seconds, which covers this naturally.
+        # But add a small extra wait to be safe.
+        if (self.settings.bar_type == BarType.GOLD
+                and self.settings.use_goldsmith_gauntlets):
+            self.humanizer.tick_delay()  # Extra safety for XP drop timing
+
+        # Walk to dispenser (close to conveyor, ~2-3 seconds walk)
         self.furnace.walk_to_dispenser()
         self.humanizer.action_delay()
 
-        # Swap to ice gloves before touching hot bars
+        # NOW safe to swap to ice gloves (XP drop has occurred)
         if self.settings.use_ice_gloves:
             self.furnace.swap_to_ice_gloves()
 
@@ -351,6 +366,13 @@ class BlastFurnaceStateMachine:
             self._consecutive_errors = 0
         else:
             print("    No bars to collect (may have been empty)")
+
+        # After collecting, swap back to goldsmith if needed.
+        # Trick: clicking goldsmith in inventory auto-dismisses any
+        # remaining dispenser message, saving a tick.
+        if (self.settings.bar_type == BarType.GOLD
+                and self.settings.use_goldsmith_gauntlets):
+            self.furnace.swap_to_goldsmith_gauntlets()
 
         # Mark that we've collected; new bars will be ready after this trip's ore smelts
         self._bars_pending_collection = True  # New ore is smelting → bars pending next time
@@ -412,6 +434,11 @@ class BlastFurnaceStateMachine:
             self._consecutive_errors = 0
         else:
             self._error("Could not collect bars from dispenser")
+
+        # Swap back to goldsmith for next trip's deposit
+        if (self.settings.bar_type == BarType.GOLD
+                and self.settings.use_goldsmith_gauntlets):
+            self.furnace.swap_to_goldsmith_gauntlets()
 
         # After first trip, subsequent trips will have bars pending
         self._bars_pending_collection = False  # Just collected, nothing pending yet
