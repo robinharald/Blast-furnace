@@ -124,8 +124,14 @@ class BankHandler:
         Deposit entire inventory except the coal bag.
 
         Strategy: Click the "Deposit inventory" button (deposits everything),
-        then immediately withdraw the coal bag back from bank.
-        This is faster than clicking individual items.
+        then immediately re-withdraw items that must stay:
+        - Coal bag (if using)
+        - Ice gloves (if using — they were in inventory, now deposited)
+
+        Note: The equipped gloves stay equipped (deposit-inventory only
+        affects inventory, not equipment). But the OTHER pair of gloves
+        (the one that was in inventory) gets deposited and must be
+        re-withdrawn.
         """
         if not self.is_bank_open():
             return False
@@ -139,6 +145,21 @@ class BankHandler:
         if self.settings.use_coal_bag and self.coal_bag is not None:
             # Coal bag was deposited too — withdraw it back
             self._withdraw_coal_bag()
+
+        # Re-withdraw gloves that were in the locked glove slot (now deposited).
+        # One pair is always equipped (stays), the other was in the locked slot (deposited).
+        # We need BOTH pairs: one equipped, one in inventory for swapping.
+        #
+        # After collecting bars: ice gloves equipped, goldsmith deposited → re-withdraw.
+        # After first trip: goldsmith equipped, ice gloves deposited → re-withdraw.
+        # Either way: whichever pair is in the bank, withdraw it.
+        if self.settings.use_ice_gloves or self.settings.use_goldsmith_gauntlets:
+            if self.settings.use_goldsmith_gauntlets and self.settings.use_ice_gloves:
+                # Both in play: try both, only the deposited one will be in bank
+                self._withdraw_item("Goldsmith gauntlets")
+                self._withdraw_item("Ice gloves")
+            elif self.settings.use_ice_gloves:
+                self._withdraw_item("Ice gloves")
 
         return True
 
@@ -156,6 +177,25 @@ class BankHandler:
         time.sleep(0.3)
         if self.coal_bag is not None:
             return self.coal_bag.is_bag_present()
+        return True
+
+    def _withdraw_item(self, name):
+        """
+        Withdraw a single item from bank by name.
+        Used for re-withdrawing gloves after deposit-all.
+        """
+        self._bank_search(name)
+        self.humanizer.bank_delay()
+
+        # Check if the item exists in bank (might already be equipped)
+        bx = self.regions.game_x + self.regions.game_w // 2 - 150
+        by = self.regions.game_y + 115
+        color = get_pixel_color(bx, by)
+        if color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE):
+            return False  # Item not in bank (probably equipped)
+
+        self._click_first_bank_slot()
+        self.humanizer.action_delay()
         return True
 
     def _bank_search(self, term):

@@ -104,6 +104,12 @@ class BotSettings:
         # Coal bag locked inventory slot (0-27)
         self.coal_bag_slot = 0
 
+        # Glove swap locked inventory slot (0-27)
+        # The unequipped pair of gloves sits here. Click to swap.
+        # Only used when both goldsmith + ice gloves are in play,
+        # or when ice gloves alone are carried.
+        self.glove_slot = 1
+
         # Emergency stop key
         self.stop_key = "f6"
 
