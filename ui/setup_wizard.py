@@ -1,88 +1,150 @@
 """
-Setup wizard for calibrating screen positions.
+Step-by-step calibration wizard.
 
-Minimal calibration — only positions that can't be auto-detected.
-Objects (bank, conveyor, dispenser) are found via RuneLite color markers.
-Bank is closed with ESC. No minimap navigation (mass worlds are useless for that).
-
-Saves to calibration.json.
+Guides the user through clicking key screen positions to calibrate
+the bot's coordinate system. Results saved to calibration.json.
 """
+import tkinter as tk
+from tkinter import messagebox
+import logging
+from typing import Callable, Optional
 
-import time
-import keyboard
-import pyautogui
-from config import ScreenRegions, save_calibration, load_calibration
+from config.settings import ScreenRegions, Region, Point, save_calibration
+
+logger = logging.getLogger(__name__)
+
+WIZARD_STEPS = [
+    ("Game Viewport — TOP-LEFT corner",
+     "Click the TOP-LEFT corner of the game viewport (where the 3D world begins)."),
+    ("Game Viewport — BOTTOM-RIGHT corner",
+     "Click the BOTTOM-RIGHT corner of the game viewport."),
+    ("Inventory — SLOT 1 center",
+     "Click the CENTER of the first inventory slot (top-left slot)."),
+    ("Minimap — CENTER",
+     "Click the exact CENTER of the minimap circle."),
+    ("Run Energy ORB",
+     "Click the center of the run energy orb (near minimap)."),
+    ("Chat Box — TOP-LEFT corner",
+     "Click the TOP-LEFT corner of the chat message area."),
+    ("Chat Box — BOTTOM-RIGHT corner",
+     "Click the BOTTOM-RIGHT corner of the chat message area."),
+    ("Spellbook TAB icon",
+     "Click the spellbook tab icon in the interface panel. (Skip if Mode B)"),
+    ("Equipment TAB icon",
+     "Click the equipment tab icon in the interface panel."),
+]
 
 
-def get_mouse_on_keypress(prompt, key="space"):
-    """Show prompt, wait for keypress, return mouse position."""
-    print(f"\n  >> {prompt}")
-    print(f"     Position your mouse and press [{key.upper()}]")
-    keyboard.wait(key)
-    pos = pyautogui.position()
-    print(f"     Captured: ({pos[0]}, {pos[1]})")
-    time.sleep(0.3)  # Debounce
-    return pos
-
-
-def run_calibration(regions: ScreenRegions):
+class CalibrationWizard:
     """
-    Interactive calibration wizard.
-    Only 7 mouse positions needed (down from 15+).
+    Transparent overlay window that captures mouse clicks for calibration.
     """
-    print("\n" + "=" * 50)
-    print("  SCREEN CALIBRATION")
-    print("=" * 50)
-    print("\n  Position your mouse on each element and press SPACE.")
-    print("  Make sure OSRS is visible and you're at the Blast Furnace.\n")
-    print("  Press ENTER to begin...")
-    input()
 
-    # ── Game viewport (2 clicks) ──
-    print("\n--- GAME VIEWPORT ---")
-    tl = get_mouse_on_keypress("TOP-LEFT corner of the game viewport")
-    br = get_mouse_on_keypress("BOTTOM-RIGHT corner of the game viewport")
-    regions.game_x = tl[0]
-    regions.game_y = tl[1]
-    regions.game_w = br[0] - tl[0]
-    regions.game_h = br[1] - tl[1]
+    def __init__(self, parent: tk.Tk, on_complete: Callable[[ScreenRegions], None]):
+        self.parent = parent
+        self.on_complete = on_complete
+        self.current_step = 0
+        self.clicks = []
+        self.overlay = None
+        self.label = None
 
-    # ── Inventory (2 clicks) ──
-    print("\n--- INVENTORY ---")
-    inv_tl = get_mouse_on_keypress("CENTER of inventory SLOT 1 (top-left slot)")
-    inv_br = get_mouse_on_keypress("CENTER of inventory SLOT 28 (bottom-right slot)")
-    regions.inv_slot_w = (inv_br[0] - inv_tl[0]) // (regions.inv_cols - 1)
-    regions.inv_slot_h = (inv_br[1] - inv_tl[1]) // (regions.inv_rows - 1)
-    regions.inv_x = inv_tl[0] - regions.inv_slot_w // 2
-    regions.inv_y = inv_tl[1] - regions.inv_slot_h // 2
+    def start(self) -> None:
+        """Launch the calibration overlay."""
+        self.current_step = 0
+        self.clicks = []
 
-    # ── Bank interface (2 clicks) ──
-    print("\n--- BANK INTERFACE ---")
-    print("  Please OPEN YOUR BANK now.\n")
-    input("  Press ENTER when the bank is open...")
+        # Create a fullscreen transparent overlay
+        self.overlay = tk.Toplevel(self.parent)
+        self.overlay.attributes("-fullscreen", True)
+        self.overlay.attributes("-alpha", 0.3)
+        self.overlay.attributes("-topmost", True)
+        self.overlay.configure(bg="black")
 
-    dep = get_mouse_on_keypress(
-        "The 'Deposit inventory' button (backpack icon at bottom of bank)")
-    regions.bank_deposit_inv_btn = (dep[0], dep[1])
+        # Instruction label
+        self.label = tk.Label(
+            self.overlay, text="", font=("Arial", 16, "bold"),
+            fg="white", bg="black", wraplength=600,
+        )
+        self.label.place(relx=0.5, rely=0.1, anchor="center")
 
-    grid = get_mouse_on_keypress(
-        "CENTER of the FIRST item slot in your bank tag tab (top-left slot)")
-    regions.bank_grid_x = grid[0] - regions.bank_slot_w // 2
-    regions.bank_grid_y = grid[1] - regions.bank_slot_h // 2
+        # Step counter
+        self.step_label = tk.Label(
+            self.overlay, text="", font=("Arial", 12),
+            fg="yellow", bg="black",
+        )
+        self.step_label.place(relx=0.5, rely=0.05, anchor="center")
 
-    # ── Run orb (1 click) ──
-    print("\n--- RUN ORB ---")
-    orb = get_mouse_on_keypress(
-        "The RUN ENERGY ORB (foot icon near the minimap)")
-    regions.run_orb_pos = (orb[0], orb[1])
+        # Cancel button
+        cancel_btn = tk.Button(
+            self.overlay, text="Cancel (ESC)", command=self._cancel,
+            font=("Arial", 11), bg="#cc3333", fg="white",
+        )
+        cancel_btn.place(relx=0.5, rely=0.95, anchor="center")
 
-    # ── Done ──
-    print("\n" + "=" * 50)
-    print("  CALIBRATION COMPLETE!")
-    print("=" * 50)
+        self.overlay.bind("<Button-1>", self._on_click)
+        self.overlay.bind("<Escape>", lambda e: self._cancel())
 
-    save_calibration(regions)
-    print(f"\n  Saved to calibration.json")
-    print("  Recalibrate only if you move/resize the client.\n")
+        self._show_step()
 
-    return regions
+    def _show_step(self) -> None:
+        """Display the current calibration step instruction."""
+        if self.current_step >= len(WIZARD_STEPS):
+            self._finish()
+            return
+
+        title, instruction = WIZARD_STEPS[self.current_step]
+        self.step_label.config(text=f"Step {self.current_step + 1} of {len(WIZARD_STEPS)}")
+        self.label.config(text=f"{title}\n\n{instruction}")
+
+    def _on_click(self, event: tk.Event) -> None:
+        """Handle a calibration click."""
+        x, y = event.x_root, event.y_root
+        self.clicks.append((x, y))
+        logger.info(f"Calibration step {self.current_step + 1}: ({x}, {y})")
+
+        self.current_step += 1
+        self._show_step()
+
+    def _finish(self) -> None:
+        """Build ScreenRegions from collected clicks and save."""
+        if self.overlay:
+            self.overlay.destroy()
+
+        if len(self.clicks) < len(WIZARD_STEPS):
+            messagebox.showwarning("Calibration", "Not enough clicks captured.")
+            return
+
+        vp_tl = self.clicks[0]
+        vp_br = self.clicks[1]
+        inv_origin = self.clicks[2]
+        minimap_center = self.clicks[3]
+        run_orb = self.clicks[4]
+        chat_tl = self.clicks[5]
+        chat_br = self.clicks[6]
+        spellbook_tab = self.clicks[7]
+        equipment_tab = self.clicks[8]
+
+        regions = ScreenRegions(
+            viewport=Region(
+                x=vp_tl[0], y=vp_tl[1],
+                w=vp_br[0] - vp_tl[0], h=vp_br[1] - vp_tl[1],
+            ),
+            inventory_origin=Point(x=inv_origin[0], y=inv_origin[1]),
+            chat_box=Region(
+                x=chat_tl[0], y=chat_tl[1],
+                w=chat_br[0] - chat_tl[0], h=chat_br[1] - chat_tl[1],
+            ),
+            minimap_center=Point(x=minimap_center[0], y=minimap_center[1]),
+            run_orb=Point(x=run_orb[0], y=run_orb[1]),
+            spellbook_tab=Point(x=spellbook_tab[0], y=spellbook_tab[1]),
+            equipment_tab=Point(x=equipment_tab[0], y=equipment_tab[1]),
+        )
+
+        save_calibration(regions)
+        messagebox.showinfo("Calibration", "Calibration saved successfully!")
+        self.on_complete(regions)
+
+    def _cancel(self) -> None:
+        """Cancel the calibration wizard."""
+        if self.overlay:
+            self.overlay.destroy()

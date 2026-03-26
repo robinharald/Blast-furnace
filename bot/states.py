@@ -1,33 +1,50 @@
 """
-Bot state definitions.
+Bot state enumeration — all 24 states for the Mahogany Homes bot.
 """
-
 from enum import Enum, auto
 
 
 class BotState(Enum):
+    # Initialization
     STARTING = auto()
-    BANKING = auto()
-    WALKING_TO_CONVEYOR = auto()
-    DEPOSITING_ORE = auto()
-    COLLECTING_PREVIOUS_BARS = auto()  # After depositing: collect bars from PREVIOUS trip
-    WALKING_TO_DISPENSER = auto()      # First trip only: walk to dispenser to wait
-    WAITING_FOR_BARS = auto()          # First trip only: wait for bars to smelt
-    COLLECTING_BARS_FIRST_TRIP = auto() # First trip only: collect first batch
-    WALKING_TO_BANK = auto()
-    STOPPED = auto()
 
-    def __str__(self):
-        labels = {
-            BotState.STARTING: "Starting up",
-            BotState.BANKING: "Banking",
-            BotState.WALKING_TO_CONVEYOR: "Walking to conveyor",
-            BotState.DEPOSITING_ORE: "Depositing ore",
-            BotState.COLLECTING_PREVIOUS_BARS: "Collecting previous bars",
-            BotState.WALKING_TO_DISPENSER: "Walking to dispenser",
-            BotState.WAITING_FOR_BARS: "Waiting for bars",
-            BotState.COLLECTING_BARS_FIRST_TRIP: "Collecting bars (first trip)",
-            BotState.WALKING_TO_BANK: "Walking to bank",
-            BotState.STOPPED: "Stopped",
-        }
-        return labels.get(self, self.name)
+    # Banking
+    BANKING = auto()
+    FILLING_PLANK_SACK = auto()
+    WITHDRAWING_SUPPLIES = auto()
+
+    # Contract acquisition — Mode A (NPC Contact)
+    CASTING_NPC_CONTACT = auto()
+    SELECTING_NPC_CONTACT = auto()
+    SELECTING_TIER = auto()
+
+    # Contract acquisition — Mode B (Walk-to-Contractor)
+    WALKING_TO_CONTRACTOR = auto()
+    TALKING_TO_CONTRACTOR = auto()
+    SELECTING_TIER_CONTRACTOR = auto()
+
+    # Contract parsing (both modes)
+    PARSING_CONTRACT = auto()
+
+    # Travel
+    TELEPORTING = auto()
+    WAITING_FOR_TELEPORT = auto()
+    WALKING_TO_HOUSE = auto()
+    ENTERING_HOUSE = auto()
+
+    # Work
+    SCANNING_HOTSPOTS = auto()
+    ROTATING_CAMERA = auto()
+    INTERACTING_HOTSPOT = auto()
+    WAITING_FOR_BUILD = auto()
+    CHANGING_FLOOR = auto()
+
+    # Completion
+    TALKING_TO_HOMEOWNER = auto()
+    HANDLING_COMPLETION_DIALOGUE = auto()
+
+    # Error handling
+    RECOVERING = auto()
+
+    # Terminal
+    STOPPED = auto()

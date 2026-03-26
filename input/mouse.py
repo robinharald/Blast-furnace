@@ -1,207 +1,243 @@
 """
-Human-like mouse movement using the WindMouse algorithm.
+Human-like mouse movement and clicking.
 
-This is the gold standard for undetectable mouse movement. It simulates:
-- Wind force: random lateral deviations during travel
-- Gravity: pull toward the target point
-- Variable speed: faster in the middle, slower at start and end
-- Natural overshoot and micro-correction
-- Gaussian noise on the final click position
+Implements multiple movement styles to prevent statistical fingerprinting:
+- WindMouse (3 profiles: default, lazy, precise)
+- Bezier curves (1-2 random control points)
 
-No straight lines. No constant speed. No teleporting.
+The active style is selected per-session with occasional variation.
 """
-
 import math
 import random
 import time
-import ctypes
-import sys
+from typing import Optional, Tuple
 
 import pyautogui
 
-# Disable pyautogui's built-in pause and failsafe for our own control
+# Disable pyautogui's built-in pause (we handle timing ourselves)
 pyautogui.PAUSE = 0
-pyautogui.FAILSAFE = True  # Keep failsafe: move mouse to corner to abort
+pyautogui.FAILSAFE = True  # move to corner = emergency stop
 
 
-def _get_cursor_pos():
-    """Get current mouse position."""
+def _get_pos() -> Tuple[int, int]:
     return pyautogui.position()
 
 
-def _platform_move(x, y):
-    """
-    Move the mouse cursor to (x, y) using OS-level calls.
-    Falls back to pyautogui if platform calls aren't available.
-    """
-    try:
-        if sys.platform == "win32":
-            ctypes.windll.user32.SetCursorPos(int(x), int(y))
-        else:
-            pyautogui.moveTo(int(x), int(y), _pause=False)
-    except Exception:
-        pyautogui.moveTo(int(x), int(y), _pause=False)
+def _platform_move(x: int, y: int) -> None:
+    pyautogui.moveTo(int(x), int(y), _pause=False)
 
 
-def wind_mouse(start_x, start_y, end_x, end_y,
-               gravity=9.0, wind=3.0, min_wait=2.0, max_wait=10.0,
-               max_step=10.0, target_area=8.0):
-    """
-    WindMouse algorithm — attempt to move the mouse from (start_x, start_y) to
-    (end_x, end_y) in a human-like way.
+# ---------------------------------------------------------------------------
+# WindMouse Algorithm
+# ---------------------------------------------------------------------------
 
-    Parameters:
-        gravity: strength of the pull toward the target
-        wind: strength of random wind deviations
-        min_wait: minimum ms between steps (controls max speed)
-        max_wait: max ms between steps (controls min speed)
-        max_step: max pixels per step
-        target_area: distance at which we slow down and get precise
+def _wind_mouse(
+    start_x: float, start_y: float,
+    end_x: float, end_y: float,
+    gravity: float = 9.0,
+    wind: float = 3.0,
+    min_wait: float = 2.0,
+    max_wait: float = 10.0,
+    max_step: float = 12.0,
+    target_area: float = 8.0,
+) -> list:
     """
+    Generate a list of (x, y) points along a WindMouse path.
+
+    Physics-based: wind force deviates the path randomly,
+    gravity pulls toward the target. Speed varies naturally.
+    """
+    points = []
+    sqrt2 = math.sqrt(2)
     sqrt3 = math.sqrt(3)
     sqrt5 = math.sqrt(5)
 
-    current_x = float(start_x)
-    current_y = float(start_y)
-    wind_x = 0.0
-    wind_y = 0.0
+    cx, cy = start_x, start_y
+    wind_x = wind_y = 0.0
+    v_x = v_y = 0.0
 
-    points = []
+    dist = math.hypot(end_x - cx, end_y - cy)
 
-    while True:
-        dist = math.hypot(end_x - current_x, end_y - current_y)
-        if dist < 1:
-            break
-
-        # Wind is stronger when far from target, weaker when close
+    while dist >= 1:
         wind_mag = min(wind, dist)
 
         if dist >= target_area:
-            # Far from target: apply wind and gravity
-            wind_x = wind_x / sqrt3 + (random.random() * (wind_mag * 2 + 1) - wind_mag) / sqrt5
-            wind_y = wind_y / sqrt3 + (random.random() * (wind_mag * 2 + 1) - wind_mag) / sqrt5
+            wind_x = wind_x / sqrt3 + (random.random() * 2 - 1) * wind_mag / sqrt5
+            wind_y = wind_y / sqrt3 + (random.random() * 2 - 1) * wind_mag / sqrt5
         else:
-            # Near target: reduce wind, increase precision
-            wind_x /= sqrt3
-            wind_y /= sqrt3
+            wind_x /= sqrt2
+            wind_y /= sqrt2
             if max_step < 3:
                 max_step = random.random() * 3 + 3.0
             else:
                 max_step /= sqrt5
 
-        # Apply gravity toward target
-        grav_x = gravity * (end_x - current_x) / dist
-        grav_y = gravity * (end_y - current_y) / dist
+        v_x += wind_x + gravity * (end_x - cx) / dist
+        v_y += wind_y + gravity * (end_y - cy) / dist
 
-        # Calculate velocity
-        vel_x = grav_x + wind_x
-        vel_y = grav_y + wind_y
+        v_mag = math.hypot(v_x, v_y)
+        if v_mag > max_step:
+            rand_scale = max_step / 2 + random.random() * max_step / 2
+            v_x = v_x / v_mag * rand_scale
+            v_y = v_y / v_mag * rand_scale
 
-        # Limit step size
-        vel_mag = math.hypot(vel_x, vel_y)
-        if vel_mag > max_step:
-            random_dist = max_step / 2.0 + random.random() * (max_step / 2.0)
-            vel_x = (vel_x / vel_mag) * random_dist
-            vel_y = (vel_y / vel_mag) * random_dist
+        cx += v_x
+        cy += v_y
 
-        current_x += vel_x
-        current_y += vel_y
+        dist = math.hypot(end_x - cx, end_y - cy)
+        points.append((round(cx), round(cy)))
 
-        # Calculate wait time (slower near target, faster in middle)
-        step_dist = math.hypot(vel_x, vel_y)
-        if step_dist > 0:
-            wait = max(min_wait, min(max_wait, round((max_wait - min_wait) * (target_area / max(dist, 1)))))
-        else:
-            wait = min_wait
-
-        points.append((round(current_x), round(current_y), wait / 1000.0))
-
-    # Execute the movement
-    for px, py, wait in points:
-        _platform_move(px, py)
-        time.sleep(wait)
+    points.append((round(end_x), round(end_y)))
+    return points
 
 
-def move_to(x, y, variance=3):
+def _get_wind_params(distance: float, profile: str = "default") -> dict:
+    """Get WindMouse parameters based on distance and profile."""
+    profiles = {
+        "default": {
+            "short":  {"gravity": 12, "wind": 1.5, "min_wait": 3, "max_wait": 12, "max_step": 5},
+            "medium": {"gravity": 9,  "wind": 3,   "min_wait": 2, "max_wait": 10, "max_step": 12},
+            "long":   {"gravity": 7,  "wind": 5,   "min_wait": 1, "max_wait": 8,  "max_step": 20},
+        },
+        "lazy": {
+            "short":  {"gravity": 8,  "wind": 3,   "min_wait": 4, "max_wait": 15, "max_step": 4},
+            "medium": {"gravity": 5,  "wind": 5,   "min_wait": 3, "max_wait": 12, "max_step": 10},
+            "long":   {"gravity": 4,  "wind": 7,   "min_wait": 2, "max_wait": 10, "max_step": 18},
+        },
+        "precise": {
+            "short":  {"gravity": 16, "wind": 0.8, "min_wait": 2, "max_wait": 10, "max_step": 4},
+            "medium": {"gravity": 14, "wind": 1.5, "min_wait": 1, "max_wait": 8,  "max_step": 10},
+            "long":   {"gravity": 11, "wind": 2,   "min_wait": 1, "max_wait": 6,  "max_step": 16},
+        },
+    }
+
+    p = profiles.get(profile, profiles["default"])
+    if distance < 50:
+        return p["short"]
+    elif distance < 250:
+        return p["medium"]
+    else:
+        return p["long"]
+
+
+# ---------------------------------------------------------------------------
+# Bezier Curve Movement
+# ---------------------------------------------------------------------------
+
+def _bezier_point(t: float, points: list) -> Tuple[float, float]:
+    """Evaluate a Bezier curve at parameter t (0..1)."""
+    n = len(points) - 1
+    x = y = 0.0
+    for i, (px, py) in enumerate(points):
+        coeff = math.comb(n, i) * (t ** i) * ((1 - t) ** (n - i))
+        x += coeff * px
+        y += coeff * py
+    return x, y
+
+
+def _bezier_move_points(
+    start_x: float, start_y: float,
+    end_x: float, end_y: float,
+    steps: int = 50,
+) -> list:
+    """Generate Bezier curve points with 1-2 random control points."""
+    num_controls = random.choice([1, 2])
+    controls = []
+    for _ in range(num_controls):
+        t = random.uniform(0.2, 0.8)
+        mx = start_x + (end_x - start_x) * t + random.gauss(0, 30)
+        my = start_y + (end_y - start_y) * t + random.gauss(0, 30)
+        controls.append((mx, my))
+
+    all_points = [(start_x, start_y)] + controls + [(end_x, end_y)]
+
+    path = []
+    for i in range(steps + 1):
+        t = i / steps
+        px, py = _bezier_point(t, all_points)
+        path.append((round(px), round(py)))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def move_to(
+    x: int, y: int,
+    variance: float = 3.0,
+    style: Optional[str] = None,
+) -> None:
     """
-    Move mouse to target with WindMouse and slight positional variance.
+    Move the mouse to (x, y) with human-like movement.
 
     Args:
-        x, y: target position
-        variance: max pixel offset from exact target (humanizes click location)
+        x, y: Target position
+        variance: Gaussian jitter on the target (pixels)
+        style: Movement style — "default", "lazy", "precise", "bezier"
+               If None, uses the session default with 20% variation.
     """
-    # Add small random offset to target
-    target_x = x + random.randint(-variance, variance)
-    target_y = y + random.randint(-variance, variance)
+    # Add positional jitter
+    tx = int(x + random.gauss(0, variance))
+    ty = int(y + random.gauss(0, variance))
 
-    cur_x, cur_y = _get_cursor_pos()
-    dist = math.hypot(target_x - cur_x, target_y - cur_y)
+    cur_x, cur_y = _get_pos()
+    dist = math.hypot(tx - cur_x, ty - cur_y)
 
-    # Adapt WindMouse parameters based on distance
-    if dist < 50:
-        # Short distance: gentle, precise
-        wind_mouse(cur_x, cur_y, target_x, target_y,
-                   gravity=12.0, wind=1.5, min_wait=3, max_wait=12,
-                   max_step=5, target_area=5)
-    elif dist < 250:
-        # Medium distance: balanced
-        wind_mouse(cur_x, cur_y, target_x, target_y,
-                   gravity=9.0, wind=3.0, min_wait=2, max_wait=10,
-                   max_step=12, target_area=8)
+    if dist < 2:
+        return
+
+    if style is None:
+        style = "default"
+
+    if style == "bezier":
+        points = _bezier_move_points(cur_x, cur_y, tx, ty)
+        for i, (px, py) in enumerate(points):
+            _platform_move(px, py)
+            progress = i / max(len(points) - 1, 1)
+            speed = 1.0 + 2.0 * math.sin(progress * math.pi)
+            wait = random.uniform(2, 8) / max(speed, 0.5)
+            time.sleep(wait / 1000.0)
     else:
-        # Long distance: fast then slow
-        wind_mouse(cur_x, cur_y, target_x, target_y,
-                   gravity=7.0, wind=5.0, min_wait=1, max_wait=8,
-                   max_step=20, target_area=12)
+        profile = style if style in ("default", "lazy", "precise") else "default"
+        params = _get_wind_params(dist, profile)
+        points = _wind_mouse(cur_x, cur_y, tx, ty, **params)
+
+        for px, py in points:
+            _platform_move(px, py)
+            wait = random.uniform(params["min_wait"], params["max_wait"])
+            time.sleep(wait / 1000.0)
 
 
-def click(x, y, button="left", variance=3):
-    """
-    Move to position and click with human-like timing.
-    """
-    move_to(x, y, variance=variance)
-    # Small pre-click delay (finger pressing down)
-    time.sleep(random.uniform(0.04, 0.12))
+def click(
+    x: int, y: int,
+    variance: float = 3.0,
+    style: Optional[str] = None,
+    button: str = "left",
+) -> None:
+    """Move to position and click."""
+    move_to(x, y, variance=variance, style=style)
+    time.sleep(random.uniform(0.02, 0.08))
     pyautogui.click(button=button, _pause=False)
-    # Small post-click delay (finger releasing)
-    time.sleep(random.uniform(0.03, 0.09))
 
 
-def right_click(x, y, variance=3):
-    """Right-click at position."""
-    click(x, y, button="right", variance=variance)
+def right_click(x: int, y: int, variance: float = 3.0, style: Optional[str] = None) -> None:
+    """Move to position and right-click."""
+    click(x, y, variance=variance, style=style, button="right")
 
 
-def double_click(x, y, variance=3):
-    """Double-click at position."""
-    move_to(x, y, variance=variance)
-    time.sleep(random.uniform(0.04, 0.10))
+def double_click(x: int, y: int, variance: float = 3.0, style: Optional[str] = None) -> None:
+    """Move to position and double-click."""
+    move_to(x, y, variance=variance, style=style)
+    time.sleep(random.uniform(0.02, 0.06))
     pyautogui.click(button="left", _pause=False)
-    time.sleep(random.uniform(0.06, 0.15))
+    time.sleep(random.uniform(0.04, 0.12))
     pyautogui.click(button="left", _pause=False)
-    time.sleep(random.uniform(0.03, 0.08))
 
 
-def click_in_region(x1, y1, x2, y2, button="left"):
-    """
-    Click at a random point within a rectangular region.
-    Uses gaussian distribution centered in the region (humans tend to click center).
-    """
-    cx = (x1 + x2) / 2
-    cy = (y1 + y2) / 2
-    w = (x2 - x1) / 2
-    h = (y2 - y1) / 2
-
-    # Gaussian with sigma = 1/3 of half-width, clamped to bounds
-    tx = int(max(x1, min(x2, random.gauss(cx, w / 3))))
-    ty = int(max(y1, min(y2, random.gauss(cy, h / 3))))
-
-    click(tx, ty, button=button, variance=0)
-
-
-def move_off_target():
-    """Move mouse to a neutral area (away from clickable objects)."""
-    # Move to a random spot in the game viewport (not on UI elements)
-    x = random.randint(200, 450)
-    y = random.randint(200, 350)
-    move_to(x, y, variance=10)
+def move_off_target(variance: int = 100) -> None:
+    """Move mouse to a random neutral position (away from game objects)."""
+    cx, cy = _get_pos()
+    dx = cx + random.randint(-variance, variance)
+    dy = cy + random.randint(-variance, variance)
+    move_to(dx, dy, variance=5, style="lazy")

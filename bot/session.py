@@ -1,95 +1,69 @@
 """
 Session statistics tracking.
 """
-
 import time
-from data.bars import BarType, GOLD_GAUNTLETS_XP
+from dataclasses import dataclass, field
 
 
+@dataclass
 class SessionStats:
-    """Tracks all session statistics."""
-
-    def __init__(self, bar_type: BarType, use_goldsmith: bool = False):
-        self.bar_type = bar_type
-        self.use_goldsmith = use_goldsmith
-        self.start_time = time.time()
-        self.bars_smelted = 0
-        self.trips_made = 0
-        self.ore_used = 0
-        self.coal_used = 0
-        self.errors = 0
-        self.breaks_taken = 0
+    """Track bot performance during a session."""
+    contracts_completed: int = 0
+    total_points: int = 0
+    total_xp: int = 0
+    planks_used: int = 0
+    steel_bars_used: int = 0
+    bank_trips: int = 0
+    errors: int = 0
+    hotspots_built: int = 0
+    start_time: float = field(default_factory=time.time)
 
     @property
-    def xp_per_bar(self):
-        if self.bar_type == BarType.GOLD and self.use_goldsmith:
-            return GOLD_GAUNTLETS_XP
-        return self.bar_type.data.xp_per_bar
-
-    @property
-    def xp_gained(self):
-        return self.bars_smelted * self.xp_per_bar
-
-    @property
-    def elapsed_seconds(self):
+    def elapsed_seconds(self) -> float:
         return time.time() - self.start_time
 
     @property
-    def elapsed_formatted(self):
-        elapsed = int(self.elapsed_seconds)
-        h = elapsed // 3600
-        m = (elapsed % 3600) // 60
-        s = elapsed % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
+    def elapsed_formatted(self) -> str:
+        s = int(self.elapsed_seconds)
+        h, r = divmod(s, 3600)
+        m, sec = divmod(r, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{sec:02d}"
+        return f"{m:02d}:{sec:02d}"
 
     @property
-    def bars_per_hour(self):
-        if self.elapsed_seconds < 1:
-            return 0
-        return int(self.bars_smelted * 3600 / self.elapsed_seconds)
+    def contracts_per_hour(self) -> float:
+        elapsed_h = self.elapsed_seconds / 3600
+        if elapsed_h < 0.01:
+            return 0.0
+        return self.contracts_completed / elapsed_h
 
     @property
-    def xp_per_hour(self):
-        if self.elapsed_seconds < 1:
-            return 0
-        return int(self.xp_gained * 3600 / self.elapsed_seconds)
+    def xp_per_hour(self) -> float:
+        elapsed_h = self.elapsed_seconds / 3600
+        if elapsed_h < 0.01:
+            return 0.0
+        return self.total_xp / elapsed_h
 
-    def add_bars(self, count):
-        self.bars_smelted += count
+    def record_contract(self, xp: int, points: int) -> None:
+        self.contracts_completed += 1
+        self.total_xp += xp
+        self.total_points += points
 
-    def add_trip(self):
-        self.trips_made += 1
+    def record_hotspot(self) -> None:
+        self.hotspots_built += 1
 
-    def add_ore(self, count):
-        self.ore_used += count
+    def record_bank_trip(self) -> None:
+        self.bank_trips += 1
 
-    def add_coal(self, count):
-        self.coal_used += count
-
-    def add_error(self):
+    def record_error(self) -> None:
         self.errors += 1
 
-    def summary(self):
+    def summary(self) -> str:
         return (
-            f"\n{'=' * 40}\n"
-            f"  Blast Furnace Session Summary\n"
-            f"{'=' * 40}\n"
-            f"  Bar type:    {self.bar_type.data.name}\n"
-            f"  Runtime:     {self.elapsed_formatted}\n"
-            f"  Bars:        {self.bars_smelted:,} ({self.bars_per_hour:,}/hr)\n"
-            f"  XP:          {int(self.xp_gained):,} ({self.xp_per_hour:,}/hr)\n"
-            f"  Trips:       {self.trips_made:,}\n"
-            f"  Ore used:    {self.ore_used:,}\n"
-            f"  Coal used:   {self.coal_used:,}\n"
-            f"  Errors:      {self.errors}\n"
-            f"  Breaks:      {self.breaks_taken}\n"
-            f"{'=' * 40}\n"
-        )
-
-    def status_line(self):
-        return (
-            f"[{self.elapsed_formatted}] "
-            f"Bars: {self.bars_smelted:,} ({self.bars_per_hour:,}/hr) | "
-            f"XP: {int(self.xp_gained):,} ({self.xp_per_hour:,}/hr) | "
-            f"Trips: {self.trips_made}"
+            f"Session: {self.elapsed_formatted} | "
+            f"Contracts: {self.contracts_completed} ({self.contracts_per_hour:.1f}/hr) | "
+            f"XP: {self.total_xp:,} ({self.xp_per_hour:,.0f}/hr) | "
+            f"Points: {self.total_points} | "
+            f"Errors: {self.errors}"
         )

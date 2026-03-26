@@ -1,134 +1,98 @@
 """
-Inventory reading and management via pixel/color detection.
+Inventory slot reading and item counting.
 
-Reads inventory slot states by sampling pixel colors at known positions.
-No injection — purely visual.
-
-Slots are 0-indexed (0-27), matching the OSRS game engine and all major
-bot frameworks (OSBot, RuneMate, DreamBot, RuneLite).
-Layout: 4 columns x 7 rows, numbered left-to-right, top-to-bottom.
-
- 0  1  2  3
- 4  5  6  7
- 8  9 10 11
-12 13 14 15
-16 17 18 19
-20 21 22 23
-24 25 26 27
+Reads inventory state by sampling pixel colors at slot centers.
+OSRS inventory is a 4x7 grid of 28 slots.
 """
+import logging
+from typing import Optional, Tuple, List
 
-import time
-from config import ScreenRegions, Colors, COLOR_TOLERANCE
-from screen.capture import capture_region, color_matches, get_pixel_color_from_frame
+from config.settings import ScreenRegions
+from screen.capture import get_pixel_color, color_matches
+from config import colors
 from input import mouse
-from anti_detect.humanizer import Humanizer
 
-TOTAL_SLOTS = 28
+logger = logging.getLogger(__name__)
 
 
 class InventoryReader:
-    """
-    Reads inventory state by analyzing pixel colors in each slot.
-    All slot references are 0-indexed (0-27).
-    """
+    """Read and interact with the OSRS inventory."""
 
-    def __init__(self, regions: ScreenRegions, humanizer: Humanizer):
+    def __init__(self, regions: ScreenRegions):
         self.regions = regions
-        self.humanizer = humanizer
 
-    def _capture_inventory(self):
-        """Capture the inventory grid area."""
-        x = self.regions.inv_x - 5
-        y = self.regions.inv_y - 5
-        w = self.regions.inv_cols * self.regions.inv_slot_w + 10
-        h = self.regions.inv_rows * self.regions.inv_slot_h + 10
-        return capture_region(x, y, w, h), (x, y)
+    def _slot_center(self, slot: int) -> Tuple[int, int]:
+        """Get absolute (x, y) center of an inventory slot."""
+        return self.regions.inventory_slot_center(slot)
 
-    def is_slot_empty(self, slot, frame=None, offset=(0, 0)):
-        """Check if an inventory slot appears empty."""
-        cx, cy = self.regions.inv_slot_center(slot)
+    def get_slot_color(self, slot: int) -> Tuple[int, int, int]:
+        """Read the color at the center of an inventory slot."""
+        x, y = self._slot_center(slot)
+        return get_pixel_color(x, y)
 
-        if frame is not None:
-            color = get_pixel_color_from_frame(frame, cx, cy, offset)
-        else:
-            from screen.capture import get_pixel_color
-            color = get_pixel_color(cx, cy)
+    def is_slot_empty(self, slot: int) -> bool:
+        """Check if a slot is empty (matches empty background color)."""
+        c = self.get_slot_color(slot)
+        return color_matches(c, colors.INV_EMPTY_SLOT, colors.INV_EMPTY_TOLERANCE)
 
-        return color_matches(color, Colors.INV_EMPTY_SLOT, COLOR_TOLERANCE)
+    def is_slot_filled(self, slot: int) -> bool:
+        return not self.is_slot_empty(slot)
 
-    def is_slot_filled(self, slot, frame=None, offset=(0, 0)):
-        """Check if an inventory slot has an item."""
-        return not self.is_slot_empty(slot, frame, offset)
+    def slot_has_color(self, slot: int, target_color: tuple, tolerance: float = 25) -> bool:
+        """Check if a slot contains an item of the given color."""
+        c = self.get_slot_color(slot)
+        return color_matches(c, target_color, tolerance)
 
-    def slot_has_color(self, slot, target_color, tolerance=20, frame=None, offset=(0, 0)):
-        """Check if a slot contains an item matching the target color."""
-        cx, cy = self.regions.inv_slot_center(slot)
+    def count_filled_slots(self) -> int:
+        """Count total non-empty inventory slots."""
+        return sum(1 for s in range(28) if self.is_slot_filled(s))
 
-        if frame is not None:
-            color = get_pixel_color_from_frame(frame, cx, cy, offset)
-        else:
-            from screen.capture import get_pixel_color
-            color = get_pixel_color(cx, cy)
+    def count_slots_with_color(self, target_color: tuple, tolerance: float = 25) -> int:
+        """Count inventory slots matching a specific item color."""
+        return sum(1 for s in range(28) if self.slot_has_color(s, target_color, tolerance))
 
-        return color_matches(color, target_color, tolerance)
-
-    def count_filled_slots(self, exclude_slot=None):
-        """Count how many inventory slots have items."""
-        frame, offset = self._capture_inventory()
-        count = 0
-        for slot in range(TOTAL_SLOTS):
-            if slot == exclude_slot:
-                continue
-            if self.is_slot_filled(slot, frame, offset):
-                count += 1
-        return count
-
-    def count_slots_with_color(self, target_color, tolerance=25, exclude_slot=None):
-        """Count slots containing items matching a specific color."""
-        frame, offset = self._capture_inventory()
-        count = 0
-        for slot in range(TOTAL_SLOTS):
-            if slot == exclude_slot:
-                continue
-            if self.slot_has_color(slot, target_color, tolerance, frame, offset):
-                count += 1
-        return count
-
-    def find_first_slot_with_color(self, target_color, tolerance=25, exclude_slot=None):
+    def find_first_slot_with_color(self, target_color: tuple,
+                                    tolerance: float = 25) -> Optional[int]:
         """Find the first slot containing an item of the given color."""
-        frame, offset = self._capture_inventory()
-        for slot in range(TOTAL_SLOTS):
-            if slot == exclude_slot:
-                continue
-            if self.slot_has_color(slot, target_color, tolerance, frame, offset):
-                return slot
+        for s in range(28):
+            if self.slot_has_color(s, target_color, tolerance):
+                return s
         return None
 
-    def is_inventory_empty(self, exclude_slot=None):
-        """Check if inventory is empty (excluding locked slot)."""
-        return self.count_filled_slots(exclude_slot=exclude_slot) == 0
+    def find_all_slots_with_color(self, target_color: tuple,
+                                   tolerance: float = 25) -> List[int]:
+        """Find all slots containing items of a given color."""
+        return [s for s in range(28) if self.slot_has_color(s, target_color, tolerance)]
 
-    def is_inventory_full(self, exclude_slot=None):
-        """Check if inventory is full (27 items + 1 locked slot)."""
-        return self.count_filled_slots(exclude_slot=exclude_slot) >= 27
-
-    def click_slot(self, slot, action="left"):
-        """Click an inventory slot with humanized movement."""
-        x, y = self.regions.inv_slot_center(slot)
-        x, y = self.humanizer.jitter_position(x, y, radius=4)
-        if action == "left":
-            mouse.click(x, y)
+    def click_slot(self, slot: int, variance: float = 3.0,
+                   style: Optional[str] = None, button: str = "left") -> None:
+        """Click an inventory slot."""
+        x, y = self._slot_center(slot)
+        if button == "left":
+            mouse.click(x, y, variance=variance, style=style)
         else:
-            mouse.right_click(x, y)
-        self.humanizer.action_delay()
+            mouse.right_click(x, y, variance=variance, style=style)
 
-    def get_inventory_snapshot(self, exclude_slot=None):
-        """
-        Get a full snapshot of inventory state.
-        Returns list of 28 booleans (True = filled, False = empty).
-        """
-        frame, offset = self._capture_inventory()
-        return [
-            self.is_slot_filled(i, frame, offset) if i != exclude_slot else True
-            for i in range(TOTAL_SLOTS)
-        ]
+    # ------------------------------------------------------------------
+    # High-level item counting
+    # ------------------------------------------------------------------
+
+    def count_planks(self, plank_color: tuple, tolerance: float = 25) -> int:
+        """Count planks in inventory by color."""
+        return self.count_slots_with_color(plank_color, tolerance)
+
+    def count_steel_bars(self) -> int:
+        """Count steel bars in inventory."""
+        return self.count_slots_with_color(colors.STEEL_BAR, colors.STEEL_BAR_TOLERANCE)
+
+    def count_teleport_tabs(self) -> int:
+        """Count teleport tabs in inventory."""
+        return self.count_slots_with_color(colors.TELEPORT_TAB, colors.TELEPORT_TAB_TOLERANCE)
+
+    def is_inventory_full(self) -> bool:
+        """Check if all 28 slots are filled."""
+        return self.count_filled_slots() >= 28
+
+    def is_inventory_empty(self) -> bool:
+        """Check if no slots are filled (unlikely, but for safety)."""
+        return self.count_filled_slots() == 0

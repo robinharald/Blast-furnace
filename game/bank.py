@@ -1,451 +1,202 @@
 """
-Bank interaction handler.
+Banking operations — deposit, fill plank sack, withdraw supplies.
 
-Handles:
-- Opening the bank chest by clicking the calibrated position
-- Detecting when the bank interface is open (via color checks)
-- Depositing inventory (locked slots skipped by game)
-- Withdrawing ores/coal from RuneLite bank tag with fixed slot positions
-- Stamina potion management
-- Closing the bank
-
-Blast Furnace bank specifics:
-- The bank is a "Bank chest" (not a booth), left-click "Use"
-- Bank opens directly on a RuneLite bank tag tab with items at known positions
-- No bank search needed — click the ore/coal directly at its fixed slot
-- "Deposit inventory" button deposits all UNLOCKED slots
-- OSRS native deposit locks (per-slot) protect coal bag and gloves
-- Coal bag fill: click coal bag in inventory (while bank is open) = "Fill"
-  Visually verified by checking if bank coal quantity text changed
-- Bank quantity button must be set to "All" for single-click ore withdrawal
-- Bank chest has 1 extra tick delay vs banker NPC interaction
+Handles the full banking sequence:
+1. Open bank
+2. Deposit inventory (keeps locked items)
+3. Fill plank sack (if owned)
+4. Withdraw planks
+5. Withdraw steel bars
+6. Withdraw teleport tabs (if needed)
+7. Close bank
 """
-
 import time
-import pyautogui
-from config import ScreenRegions, Colors, COLOR_TOLERANCE, BotSettings
-from screen.capture import (
-    capture_screen, color_matches, get_pixel_color,
-    region_has_color, capture_region, get_pixel_color_from_frame,
-    find_color_in_region,
-)
-from game.inventory import InventoryReader
+import random
+import logging
+from typing import Optional
+
+from config import colors
+from config.settings import BotSettings, ScreenRegions
 from game.object_finder import ObjectFinder
-from input import mouse
+from game.inventory import InventoryReader
+from game.dialogue import DialogueHandler
+from screen.capture import region_has_color
+from input import mouse, keyboard
 from anti_detect.humanizer import Humanizer
-from data.bars import BarType, COAL_COLOR
+from data.materials import get_tier
+
+logger = logging.getLogger(__name__)
 
 
 class BankHandler:
-    """
-    All bank-related interactions.
-    Uses RuneLite Object Markers to find the bank chest dynamically.
-    """
+    """Full banking sequence for restocking supplies."""
 
-    def __init__(self, regions: ScreenRegions, settings: BotSettings,
-                 inventory: InventoryReader, coal_bag, humanizer: Humanizer):
-        self.regions = regions
+    def __init__(
+        self,
+        settings: BotSettings,
+        regions: ScreenRegions,
+        finder: ObjectFinder,
+        inventory: InventoryReader,
+        humanizer: Humanizer,
+    ):
         self.settings = settings
+        self.regions = regions
+        self.finder = finder
         self.inventory = inventory
-        self.coal_bag = coal_bag  # Can be None if not using coal bag
         self.humanizer = humanizer
-        self.finder = ObjectFinder(regions)
+        self.tier_data = get_tier(settings.tier)
 
-        # Trip counter for coal-loading cycles.
-        # Tracks how many coal trips have been completed in the current cycle.
-        self._coal_trip = 0
-
-        # Whether the NEXT trip will be an ore trip.
-        # This is set BEFORE withdrawing so the state machine can read it.
-        self._next_is_ore_trip = True
-
-    def _get_coal_bag_slot(self):
-        """Safely get coal bag slot, returns None if no coal bag."""
-        if self.coal_bag is not None:
-            return self.coal_bag.get_locked_slot()
-        return None
-
-    def is_bank_open(self):
-        """
-        Detect if the bank interface is open by checking for the
-        characteristic bank background/title color in the expected region.
-        """
-        frame = capture_region(
-            self.regions.game_x, self.regions.game_y,
-            self.regions.game_w, self.regions.game_h
-        )
-        offset = (self.regions.game_x, self.regions.game_y)
-
-        # Bank interface title bar is near the top-center of the viewport
-        mid_x = self.regions.game_x + self.regions.game_w // 2
-        mid_y = self.regions.game_y + 50
-
-        color = get_pixel_color_from_frame(frame, mid_x, mid_y, offset)
-
-        # Also check a second point to reduce false positives
-        mid_y2 = self.regions.game_y + 35
-        color2 = get_pixel_color_from_frame(frame, mid_x, mid_y2, offset)
-
-        return (color_matches(color, Colors.BANK_BG, COLOR_TOLERANCE) or
-                color_matches(color, Colors.BANK_TITLE, COLOR_TOLERANCE) or
-                color_matches(color2, Colors.BANK_TITLE, COLOR_TOLERANCE))
-
-    def open_bank(self):
-        """
-        Click the bank chest to open the bank.
-        Returns True if bank opened successfully.
-        """
-        if self.is_bank_open():
-            return True
-
-        bx, by = self.finder.find_bank()
-        mouse.click(bx, by, variance=4)
-        self.humanizer.reaction_delay()
-
-        # Wait for bank to open (up to 3 seconds)
-        for _ in range(15):
-            if self.is_bank_open():
-                self.humanizer.bank_delay()
-                return True
-            time.sleep(0.2)
-
-        return False
-
-    def close_bank(self):
-        """Close the bank interface by pressing Escape."""
-        if not self.is_bank_open():
-            return True
-
-        pyautogui.press("escape")
-        self.humanizer.action_delay()
-
-        for _ in range(10):
-            if not self.is_bank_open():
-                return True
-            time.sleep(0.15)
-
-        return not self.is_bank_open()
-
-    def deposit_all_except_locked(self):
-        """
-        Deposit entire inventory using the "Deposit inventory" button.
-
-        OSRS native deposit locks (per-slot) mean the button automatically
-        SKIPS items in locked slots. The player must pre-configure:
-        - Coal bars: lock slot 0 (coal bag)
-        - Gold bars: lock slot 0 (gloves for swapping)
-
-        No re-withdrawal needed — locked items stay in inventory.
-        Only bars and leftover items get deposited.
-        """
-        if not self.is_bank_open():
+    def open_bank(self) -> bool:
+        """Click the bank chest to open the bank interface."""
+        bank_pos = self.finder.find_bank()
+        if bank_pos is None:
+            logger.warning("Bank not found in viewport")
             return False
 
-        # Click the deposit inventory button — locked slots are skipped by the game
-        dx, dy = self.regions.bank_deposit_inv_btn
-        mouse.click(dx, dy, variance=3)
-        self.humanizer.action_delay()
-        self.humanizer.action_delay()
-
-        return True
-
-    def withdraw_ore(self, bar_type: BarType):
-        """
-        Withdraw the correct ores for the current bar type and trip cycle.
-        Handles coal-requiring bars with proper trip counting.
-
-        IMPORTANT: Sets self._next_is_ore_trip BEFORE modifying the counter
-        so the state machine knows what kind of trip this is.
-
-        Returns True if items were withdrawn successfully.
-        """
-        if not self.is_bank_open():
-            return False
-
-        data = bar_type.data
-
-        if data.requires_coal:
-            return self._withdraw_coal_bar_cycle(bar_type)
-        elif data.ore.has_two_ores:
-            return self._withdraw_two_ores(bar_type)
-        else:
-            return self._withdraw_simple_ore(bar_type)
-
-    def _click_bank_tag_slot(self, bank_slot):
-        """
-        Click a specific bank tag slot to withdraw from it.
-        Assumes bank quantity is set to "All" (left-click = withdraw all).
-        The player must configure this in the bank settings before starting.
-        """
-        bx, by = self.regions.bank_slot_center(bank_slot)
-        mouse.click(bx, by, variance=3)
-
-    def _withdraw_x_from_bank_tag(self, bank_slot, amount):
-        """Right-click a bank tag slot and withdraw a specific amount."""
-        bx, by = self.regions.bank_slot_center(bank_slot)
-
-        if amount == 1:
-            # Single left-click if quantity is set to 1, otherwise right-click
-            mouse.click(bx, by, variance=2)
-        else:
-            mouse.right_click(bx, by, variance=2)
-            self.humanizer.action_delay()
-            # "Withdraw-X" in right-click menu (~90px down)
-            mouse.click(bx, by + 90, variance=2)
-            self.humanizer.action_delay()
-            pyautogui.typewrite(str(amount), interval=0.05)
-            pyautogui.press("enter")
-        self.humanizer.action_delay()
-
-    def _withdraw_simple_ore(self, bar_type: BarType):
-        """
-        Withdraw a full inventory of a single ore type (iron, silver, gold).
-        Clicks the ore's fixed position in the bank tag tab.
-        """
-        self._next_is_ore_trip = True
-
-        self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
-        self.humanizer.action_delay()
-        return True
-
-    def _withdraw_two_ores(self, bar_type: BarType):
-        """
-        Withdraw two ore types (bronze: copper + tin).
-        With coal bag slot occupied: 13 of each = 26 total + 1 coal bag = 27 slots.
-        Without coal bag: 14 of each = 28 slots.
-        """
-        self._next_is_ore_trip = True
-        has_bag = self.settings.use_coal_bag and self.coal_bag is not None
-
-        # Determine amounts: coal bag takes 1 slot
-        amount_each = 13 if has_bag else 14
-
-        self._withdraw_x_from_bank_tag(self.settings.bank_tag_ore_slot, amount_each)
-        self.humanizer.action_delay()
-
-        self._withdraw_x_from_bank_tag(self.settings.bank_tag_secondary_ore_slot, amount_each)
-        self.humanizer.action_delay()
-        return True
-
-    def _withdraw_coal_bar_cycle(self, bar_type: BarType):
-        """
-        Handle the coal trip cycle for steel/mithril/adamant/rune.
-
-        Coal requirements at Blast Furnace (halved):
-          Steel:     1 coal per bar
-          Mithril:   2 coal per bar
-          Adamantite: 3 coal per bar
-          Runite:    4 coal per bar
-
-        WITH COAL BAG (27 coal capacity, 1 inv slot):
-          Available inv slots = 27 (28 - coal bag)
-          Each trip carries: 27 inv items + 27 coal bag = 54 total items
-
-          Steel (1 coal/bar):
-            Every trip is an ORE trip: 27 ore in inv, 27 coal in bag
-            → Produces 27 bars per trip
-            Coal bag provides exactly 1 coal per ore → perfect ratio
-
-          Mithril (2 coal/bar):
-            Need 2 coal per mithril ore.
-            Trip 1 (COAL): 27 coal in inv + 27 coal in bag = 54 coal loaded
-            Trip 2 (ORE):  27 mithril in inv + 27 coal in bag = 27 mithril + 27 coal
-            Total coal: 54 + 27 = 81 coal for 27 ore → 3 coal/bar ✗ (need only 2)
-            Actually: 54 coal on trip 1, then 27 ore + 27 coal on trip 2
-            = 54 + 27 = 81 coal for 27 bars → 3 per bar. That's too much coal.
-
-            CORRECT approach: coal_per_bar - 1 = number of coal-only trips per cycle.
-            Mithril: 1 coal trip, then 1 ore trip (with coal bag filled both trips)
-            Trip 1: 27 coal (inv) + 27 coal (bag) = 54 coal in furnace
-            Trip 2: 27 ore (inv) + 27 coal (bag) = 27 coal + 27 ore
-            Total: 54 + 27 = 81 coal for 27 ore = 3 coal/ore. But we need 2!
-
-            The issue: with the bag filling every trip, we over-supply coal.
-            This is FINE — the BF furnace holds up to 254 coal. Extra coal stays.
-            The ore determines how many bars are made. Excess coal remains for next cycle.
-
-            So the pattern is: (coal_per_bar - 1) coal-only trips, then 1 ore trip.
-            Coal bag is filled every trip. This over-supplies coal slightly but
-            the excess carries over, and over many cycles it averages out.
-            Real players do the same thing — it's the standard efficient method.
-
-          Adamantite (3 coal/bar): 2 coal trips + 1 ore trip
-          Runite (4 coal/bar): 3 coal trips + 1 ore trip
-
-        WITHOUT COAL BAG:
-          Full 28 slots available.
-          Need coal_per_bar coal trips per ore trip.
-          Steel: 1 coal trip + 1 ore trip
-          Mithril: 2 coal trips + 1 ore trip
-          Adamantite: 3 coal trips + 1 ore trip
-          Runite: 4 coal trips + 1 ore trip
-        """
-        coal_per_bar = bar_type.data.coal_per_bar
-        has_bag = self.settings.use_coal_bag and self.coal_bag is not None
-
-        if has_bag:
-            # Set coal's bank tag position for visual verification of bag fill.
-            # When the coal bag is clicked in inventory (while bank is open),
-            # it pulls coal from the bank. We verify by checking if the bank's
-            # coal quantity text pixels changed.
-            coal_bx, coal_by = self.regions.bank_slot_center(
-                self.settings.bank_tag_coal_slot
-            )
-            self.coal_bag.set_bank_coal_pos(coal_bx, coal_by)
-
-            # Fill coal bag — visually verified (retries if click doesn't register)
-            if not self.coal_bag.fill():
-                print("    [WARN] Coal bag fill could not be verified")
-            self.humanizer.action_delay()
-
-            if coal_per_bar == 1:
-                # STEEL SPECIAL CASE: every trip is ore + coal bag
-                # 27 ore in inventory + 27 coal in bag = perfect 1:1 ratio
-                self._next_is_ore_trip = True
-                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
-                self.humanizer.action_delay()
-                return True
-
-            # For mithril/adamant/rune: alternate coal and ore trips
-            coal_trips_needed = coal_per_bar - 1  # Bag covers 1 coal/bar on ore trip
-
-            if self._coal_trip < coal_trips_needed:
-                # COAL-ONLY TRIP
-                self._next_is_ore_trip = False
-                self._click_bank_tag_slot(self.settings.bank_tag_coal_slot)
-                self._coal_trip += 1
-                self.humanizer.action_delay()
-                return True
-            else:
-                # ORE TRIP
-                self._next_is_ore_trip = True
-                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
-                self._coal_trip = 0
-                self.humanizer.action_delay()
-                return True
-        else:
-            # No coal bag: alternate full inventories of coal and ore
-            if self._coal_trip < coal_per_bar:
-                # COAL TRIP
-                self._next_is_ore_trip = False
-                self._click_bank_tag_slot(self.settings.bank_tag_coal_slot)
-                self._coal_trip += 1
-            else:
-                # ORE TRIP
-                self._next_is_ore_trip = True
-                self._click_bank_tag_slot(self.settings.bank_tag_ore_slot)
-                self._coal_trip = 0
-            self.humanizer.action_delay()
-            return True
-
-    def is_ore_trip(self):
-        """
-        Check if the CURRENT trip (just withdrawn) is an ore trip.
-        This was determined during withdraw_ore() before the counter changed.
-        """
-        return self._next_is_ore_trip
-
-    def handle_stamina(self):
-        """
-        Check run energy and drink a stamina potion if needed.
-        Withdraws from bank if necessary.
-        """
-        if not self.settings.use_stamina:
-            return
-
-        # Check run energy via the calibrated run orb position
-        orb_x, orb_y = self.regions.run_orb_pos
-        orb_color = get_pixel_color(orb_x, orb_y)
-
-        # If stamina effect is active (bright orange/yellow orb), skip
-        if color_matches(orb_color, Colors.STAMINA_ACTIVE, 30):
-            return
-
-        # If run energy looks healthy (bright), skip
-        brightness = sum(orb_color) / 3
-        if brightness > 120:
-            return
-
-        # Need stamina — withdraw from bank tag slot
-        if not self.is_bank_open():
-            return
-
-        if self.settings.bank_tag_stamina_slot is None:
-            return  # No stamina slot configured
-
-        # Check if stamina exists at its bank tag position
-        sx, sy = self.regions.bank_slot_center(self.settings.bank_tag_stamina_slot)
-        color = get_pixel_color(sx, sy)
-        if color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE):
-            return  # No stamina potions in bank
-
-        # Click to withdraw 1 (default left-click quantity should be set to 1)
-        mouse.click(sx, sy, variance=3)
-        self.humanizer.action_delay()
-
-        # Close bank to drink
-        self.close_bank()
-        self.humanizer.action_delay()
-
-        # Find and click the stamina potion in inventory
-        stam_color = (200, 160, 40)
-        coal_bag_slot = self._get_coal_bag_slot()
-        stam_slot = self.inventory.find_first_slot_with_color(
-            stam_color, tolerance=35, exclude_slot=coal_bag_slot
-        )
-        if stam_slot is not None:
-            self.inventory.click_slot(stam_slot)
-            self.humanizer.action_delay()
-            time.sleep(0.6)  # Wait for drink animation
-
-        # Re-open bank
-        self.open_bank()
+        mouse.click(*bank_pos, variance=4)
         self.humanizer.bank_delay()
 
-        # Deposit empty vial if present
-        vial_color = (180, 180, 200)
-        vial_slot = self.inventory.find_first_slot_with_color(
-            vial_color, tolerance=30, exclude_slot=coal_bag_slot
+        # Wait for bank interface to appear
+        return self._wait_for_bank_open(timeout=5.0)
+
+    def _wait_for_bank_open(self, timeout: float = 5.0) -> bool:
+        """Wait for bank interface to open."""
+        vp = self.regions.viewport
+        start = time.time()
+        while time.time() - start < timeout:
+            if region_has_color(
+                vp.x + vp.w // 4, vp.y + vp.h // 4,
+                vp.w // 2, vp.h // 2,
+                colors.BANK_TITLE_BG, colors.BANK_TITLE_TOLERANCE,
+                min_pixels=30,
+            ):
+                logger.debug("Bank interface detected")
+                return True
+            time.sleep(0.3)
+        logger.warning("Bank open timed out")
+        return False
+
+    def deposit_all(self) -> None:
+        """Click 'Deposit inventory' button (deposit-locked items stay)."""
+        # The deposit button is in a fixed position relative to the bank interface
+        # Approximate: near bottom-center of bank window
+        vp = self.regions.viewport
+        deposit_x = vp.x + vp.w // 2 - 30
+        deposit_y = vp.y + vp.h - 50
+        mouse.click(deposit_x, deposit_y, variance=5)
+        self.humanizer.bank_delay()
+
+    def fill_plank_sack(self) -> bool:
+        """
+        Fill the plank sack in bank:
+        1. Withdraw 28 planks
+        2. Right-click plank sack -> "Use"
+        3. Planks move from inventory to sack
+        """
+        if not self.settings.has_plank_sack:
+            return True
+
+        logger.debug("Filling plank sack")
+
+        # Withdraw planks to fill the sack
+        self._withdraw_planks_batch(28)
+        self.humanizer.bank_delay()
+
+        # Right-click plank sack and select "Use"
+        sack_slot = self.inventory.find_first_slot_with_color(
+            (70, 55, 50), tolerance=30  # Plank sack color approximation
         )
-        if vial_slot is not None:
-            self.inventory.click_slot(vial_slot)
+        if sack_slot is not None:
+            self.inventory.click_slot(sack_slot, button="right")
             self.humanizer.action_delay()
-
-    def has_supplies(self, bar_type: BarType):
-        """
-        Quick check if the bank tag tab has the required ores.
-        Checks the known slot positions for non-empty colors.
-        """
-        if not self.is_bank_open():
+            # Select "Use" from context menu (first option usually)
+            # In bank, left-click on plank sack with planks in inventory = fill
+            self.inventory.click_slot(sack_slot)
+            self.humanizer.bank_delay()
+        else:
+            logger.warning("Plank sack not found in inventory")
             return False
-
-        # Check primary ore at its bank tag position
-        bx, by = self.regions.bank_slot_center(self.settings.bank_tag_ore_slot)
-        color = get_pixel_color(bx, by)
-        has_ore = not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
-
-        if not has_ore:
-            return False
-
-        # Check coal if needed
-        if bar_type.data.requires_coal:
-            cx, cy = self.regions.bank_slot_center(self.settings.bank_tag_coal_slot)
-            color = get_pixel_color(cx, cy)
-            return not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
-
-        # Check secondary ore if needed (bronze)
-        if bar_type.data.ore.has_two_ores and self.settings.bank_tag_secondary_ore_slot is not None:
-            sx, sy = self.regions.bank_slot_center(self.settings.bank_tag_secondary_ore_slot)
-            color = get_pixel_color(sx, sy)
-            return not color_matches(color, Colors.BANK_SLOT_EMPTY, COLOR_TOLERANCE)
 
         return True
 
-    def reset_trip_counter(self):
-        """Reset the coal trip counter."""
-        self._coal_trip = 0
+    def withdraw_supplies(self) -> bool:
+        """Withdraw all needed supplies (planks, bars, tabs)."""
+        logger.info("Withdrawing supplies")
 
-    def get_coal_trip(self):
-        """Get current coal trip counter."""
-        return self._coal_trip
+        # Withdraw planks to fill remaining inventory slots
+        self._withdraw_planks_batch(self.settings.plank_slots_available())
+        self.humanizer.bank_delay()
 
+        # Withdraw steel bars (4)
+        self._withdraw_steel_bars()
+        self.humanizer.bank_delay()
+
+        # Withdraw teleport tabs if needed
+        self._withdraw_teleport_tabs()
+        self.humanizer.bank_delay()
+
+        return True
+
+    def _withdraw_planks_batch(self, count: int) -> None:
+        """
+        Withdraw planks from bank.
+        Assumes bank tab with planks is visible and "Withdraw-All" is set.
+        Click the plank slot in the bank interface.
+        """
+        # Bank plank position is approximate — depends on bank layout
+        # The user should have planks in the first visible tab
+        vp = self.regions.viewport
+        plank_x = vp.x + vp.w // 4
+        plank_y = vp.y + vp.h // 3
+        mouse.click(plank_x, plank_y, variance=5)
+        self.humanizer.bank_delay()
+
+    def _withdraw_steel_bars(self) -> None:
+        """Withdraw steel bars from bank."""
+        current = self.inventory.count_steel_bars()
+        if current >= 4:
+            return
+
+        vp = self.regions.viewport
+        bar_x = vp.x + vp.w // 4 + 50
+        bar_y = vp.y + vp.h // 3
+        mouse.click(bar_x, bar_y, variance=5)
+
+    def _withdraw_teleport_tabs(self) -> None:
+        """Withdraw teleport tabs if any are missing."""
+        current_tabs = self.inventory.count_teleport_tabs()
+        needed = self.settings._teleport_tab_count()
+        if current_tabs >= needed:
+            return
+
+        # Click tab position in bank
+        vp = self.regions.viewport
+        tab_x = vp.x + vp.w // 4 + 100
+        tab_y = vp.y + vp.h // 3
+        mouse.click(tab_x, tab_y, variance=5)
+
+    def close_bank(self) -> None:
+        """Close the bank interface."""
+        keyboard.press_escape()
+        self.humanizer.action_delay()
+
+    def full_bank_sequence(self) -> bool:
+        """
+        Execute the complete banking sequence.
+        Returns True if banking completed successfully.
+        """
+        logger.info("Starting full bank sequence")
+
+        if not self.open_bank():
+            return False
+
+        self.deposit_all()
+
+        if self.settings.has_plank_sack:
+            self.fill_plank_sack()
+
+        self.withdraw_supplies()
+        self.close_bank()
+
+        logger.info("Banking complete")
+        return True
