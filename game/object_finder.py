@@ -35,7 +35,7 @@ class ObjectFinder:
         return find_color_in_region(qx, qy, qw, qh, color, tolerance)
 
     def find_color(self, color: tuple, tolerance: float = 30,
-                   min_pixels: int = 10) -> Optional[Tuple[int, int]]:
+                   min_pixels: int = 10, label: str = "object") -> Optional[Tuple[int, int]]:
         """
         Find the centroid of an object by its overlay color.
         Uses quick scan (cached position) then full viewport scan.
@@ -47,16 +47,21 @@ class ObjectFinder:
         if color_key in self._cache:
             result = self._quick_scan(color, tolerance, self._cache[color_key])
             if result:
+                logger.debug(f"Found {label} at {result} (quick scan)")
                 self._cache[color_key] = result
                 return result
 
         # Full viewport scan
+        logger.debug(f"Searching viewport for {label} color={color} tol={tolerance}")
         result = find_color_in_region(
             self.vx, self.vy, self.vw, self.vh,
             color, tolerance, min_pixels,
         )
         if result:
+            logger.debug(f"Found {label} at {result} (full scan)")
             self._cache[color_key] = result
+        else:
+            logger.debug(f"{label} NOT FOUND in viewport")
         return result
 
     # ------------------------------------------------------------------
@@ -68,11 +73,13 @@ class ObjectFinder:
         Find all highlighted hotspot clusters in the viewport.
         Returns list of (x, y) centroids sorted by distance from center.
         """
-        return find_all_color_clusters(
+        spots = find_all_color_clusters(
             self.vx, self.vy, self.vw, self.vh,
             colors.HOTSPOT_HIGHLIGHT, colors.HOTSPOT_TOLERANCE,
             min_cluster_pixels=15, max_clusters=10,
         )
+        logger.debug(f"Hotspot scan: found {len(spots)} clusters")
+        return spots
 
     def find_nearest_hotspot(self) -> Optional[Tuple[int, int]]:
         """Find the single nearest highlighted hotspot."""
@@ -81,23 +88,23 @@ class ObjectFinder:
 
     def find_door(self) -> Optional[Tuple[int, int]]:
         """Find a house door (orange Object Marker)."""
-        return self.find_color(colors.DOOR_MARKER, colors.DOOR_TOLERANCE)
+        return self.find_color(colors.DOOR_MARKER, colors.DOOR_TOLERANCE, label="door")
 
     def find_staircase(self) -> Optional[Tuple[int, int]]:
         """Find a staircase (yellow Object Marker)."""
-        return self.find_color(colors.STAIRCASE_MARKER, colors.STAIRCASE_TOLERANCE)
+        return self.find_color(colors.STAIRCASE_MARKER, colors.STAIRCASE_TOLERANCE, label="staircase")
 
     def find_bank(self) -> Optional[Tuple[int, int]]:
         """Find a bank chest (blue Object Marker)."""
-        return self.find_color(colors.BANK_MARKER, colors.BANK_TOLERANCE)
+        return self.find_color(colors.BANK_MARKER, colors.BANK_TOLERANCE, label="bank")
 
     def find_homeowner_npc(self) -> Optional[Tuple[int, int]]:
         """Find the homeowner NPC (magenta NPC Indicator)."""
-        return self.find_color(colors.NPC_MARKER, colors.NPC_TOLERANCE)
+        return self.find_color(colors.NPC_MARKER, colors.NPC_TOLERANCE, label="homeowner_npc")
 
     def find_contractor_npc(self) -> Optional[Tuple[int, int]]:
         """Find a contractor NPC (lime NPC Indicator, Mode B only)."""
-        return self.find_color(colors.CONTRACTOR_MARKER, colors.CONTRACTOR_TOLERANCE)
+        return self.find_color(colors.CONTRACTOR_MARKER, colors.CONTRACTOR_TOLERANCE, label="contractor_npc")
 
     def clear_cache(self) -> None:
         """Clear position cache (e.g., after teleporting to a new area)."""

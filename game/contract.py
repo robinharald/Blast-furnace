@@ -54,6 +54,7 @@ class ContractManager:
             self.regions.chat_box.w, self.regions.chat_box.h,
         )
         if not text:
+            logger.warning("OCR returned empty text from chat box")
             return None
 
         logger.debug(f"Chat OCR: {text[:100]}...")

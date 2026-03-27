@@ -30,19 +30,23 @@ class DialogueHandler:
 
     def is_dialogue_open(self) -> bool:
         """Check if any dialogue box is visible."""
-        return region_has_color(
+        result = region_has_color(
             self._chat.x, self._chat.y, self._chat.w, self._chat.h,
             colors.DIALOGUE_BG, colors.DIALOGUE_BG_TOLERANCE,
             min_pixels=50,
         )
+        logger.debug(f"Dialogue open check: {result}")
+        return result
 
     def click_continue(self) -> None:
         """Press SPACE to advance 'Click here to continue' dialogue."""
+        logger.debug("Dialogue: pressing SPACE to continue")
         keyboard.press_space()
         time.sleep(random.uniform(0.3, 0.6))
 
     def select_option(self, option_number: int) -> None:
         """Select a numbered dialogue option (1-5) by pressing the number key."""
+        logger.debug(f"Dialogue: selecting option {option_number}")
         keyboard.press_number(option_number)
         time.sleep(random.uniform(0.3, 0.6))
 
@@ -65,14 +69,16 @@ class DialogueHandler:
 
         Returns True if dialogue completed successfully.
         """
-        for _ in range(15):
+        logger.info("Handling contract dialogue sequence")
+        for i in range(15):
             if not self.is_dialogue_open():
+                logger.info(f"Contract dialogue completed after {i} clicks")
                 return True
 
-            # Try selecting the construction contract option first
             self.click_continue()
             time.sleep(random.uniform(0.4, 0.8))
 
+        logger.warning("Contract dialogue did not close after 15 attempts")
         return False
 
     def handle_tier_selection(self, tier: str) -> None:
@@ -84,10 +90,13 @@ class DialogueHandler:
             "expert": 4,
         }
         option = tier_map.get(tier, 4)
+        logger.info(f"Selecting tier '{tier}' (option {option})")
 
         if self.is_dialogue_open():
             self.select_option(option)
             time.sleep(random.uniform(0.4, 0.7))
+        else:
+            logger.warning("Dialogue not open for tier selection")
 
     def handle_completion_dialogue(self, accept_tea: bool = False) -> bool:
         """
@@ -99,6 +108,7 @@ class DialogueHandler:
 
         Returns True if dialogue completed.
         """
+        logger.info(f"Handling completion dialogue (tea={'accept' if accept_tea else 'decline'})")
         for _ in range(10):
             if not self.is_dialogue_open():
                 return True

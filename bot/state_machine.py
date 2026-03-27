@@ -16,6 +16,7 @@ import keyboard as kb_module
 from bot.states import BotState
 from bot.session import SessionStats
 from bot.error_recovery import ErrorRecovery
+from bot.error_logger import ErrorTracker, ErrorType, build_context
 from config.settings import BotSettings, ScreenRegions
 from anti_detect.session_profile import SessionProfile
 from anti_detect.humanizer import Humanizer
@@ -56,6 +57,10 @@ class MahoganyHomesBot:
         self._running = False
         self._paused = False
 
+        # Error tracking (reset on each new session — no data accumulation)
+        self.error_tracker = ErrorTracker()
+        self.error_tracker.reset()
+
         # Session profile & anti-detection
         self.profile = SessionProfile()
         self.humanizer = Humanizer(self.profile)
@@ -83,9 +88,10 @@ class MahoganyHomesBot:
         )
         self.spellcaster = SpellCaster(regions, self.humanizer)
 
-        # Tracking
+        # Tracking (wire error tracker into session stats and recovery)
         self.stats = SessionStats()
-        self.recovery = ErrorRecovery()
+        self.stats._error_tracker = self.error_tracker
+        self.recovery = ErrorRecovery(self.error_tracker)
         self.tier_data = get_tier(settings.tier)
 
         # Hotspot tracking for current contract
@@ -137,10 +143,21 @@ class MahoganyHomesBot:
 
         except Exception as e:
             logger.exception(f"Bot crashed: {e}")
+            self.recovery.record_error(
+                self.state, ErrorType.HANDLER_EXCEPTION,
+                f"Bot crashed: {e}", module="state_machine",
+                exception=e, context=build_context(self),
+            )
             self._log(f"ERROR: {e}")
         finally:
             self._running = False
             self._log(f"Bot stopped | {self.stats.summary()}")
+            # Export error report on stop
+            if self.error_tracker.total_errors > 0:
+                report = self.error_tracker.export_session_report()
+                self._log(f"Error report: {report}")
+                self._log(f"Error summary:\n{self.error_tracker.session_summary()}")
+            self.error_tracker.close()
 
     def stop(self) -> None:
         """Gracefully stop the bot."""
@@ -186,20 +203,34 @@ class MahoganyHomesBot:
 
         handler = handlers.get(self.state)
         if handler:
+            self.recovery.record_state_attempt(self.state)
             try:
                 handler()
                 self.recovery.record_success()
             except Exception as e:
-                logger.error(f"Handler error in {self.state.name}: {e}")
-                self.recovery.record_error(self.state, str(e))
-                self.stats.record_error()
+                # Capture full context at the moment of failure
+                ctx = build_context(self)
+                self.recovery.record_error(
+                    state=self.state,
+                    error_type=ErrorType.HANDLER_EXCEPTION,
+                    message=f"Handler exception in {self.state.name}: {e}",
+                    module=f"state_machine.{handler.__name__}",
+                    exception=e,
+                    context=ctx,
+                )
+                self._log(f"ERROR in {self.state.name}: {e}")
                 if self.recovery.should_stop():
                     self._log("Too many errors — stopping bot")
                     self.state = BotState.STOPPED
                 else:
                     self.state = BotState.RECOVERING
         else:
-            logger.warning(f"No handler for state {self.state}")
+            self.recovery.record_error(
+                state=self.state,
+                error_type=ErrorType.STATE_INVALID,
+                message=f"No handler for state {self.state}",
+                module="state_machine",
+            )
             self.state = BotState.RECOVERING
 
     # ------------------------------------------------------------------
@@ -227,7 +258,11 @@ class MahoganyHomesBot:
             else:
                 self.state = BotState.WALKING_TO_CONTRACTOR
         else:
-            self.recovery.record_error(self.state, "banking_failed")
+            self.recovery.record_error(
+                self.state, ErrorType.BANK_NOT_OPENED,
+                "Banking sequence failed", module="bank",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_casting_npc_contact(self) -> None:
@@ -237,7 +272,11 @@ class MahoganyHomesBot:
             self.humanizer.reaction_delay()
             self.state = BotState.SELECTING_TIER
         else:
-            self.recovery.record_error(self.state, "npc_contact_failed")
+            self.recovery.record_error(
+                self.state, ErrorType.NPC_CONTACT_FAILED,
+                "NPC Contact spell failed", module="spellbook",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_walking_to_contractor(self) -> None:
@@ -257,7 +296,11 @@ class MahoganyHomesBot:
             self.dialogue.wait_for_dialogue(timeout=5.0)
             self.state = BotState.SELECTING_TIER_CONTRACTOR
         else:
-            self.recovery.record_error(self.state, "contractor_not_found")
+            self.recovery.record_error(
+                self.state, ErrorType.CONTRACTOR_NOT_FOUND,
+                "Contractor NPC not visible in viewport", module="object_finder",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_selecting_tier(self) -> None:
@@ -290,7 +333,11 @@ class MahoganyHomesBot:
             self._log("Failed to parse contract — retrying...")
             self.humanizer.action_delay()
             # Try again after a brief wait
-            self.recovery.record_error(self.state, "parse_failed")
+            self.recovery.record_error(
+                self.state, ErrorType.OCR_PARSE_FAILED,
+                "Failed to parse contract NPC from chat text", module="ocr",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_teleporting(self) -> None:
@@ -300,7 +347,11 @@ class MahoganyHomesBot:
         if success:
             self.state = BotState.WAITING_FOR_TELEPORT
         else:
-            self.recovery.record_error(self.state, "teleport_failed")
+            self.recovery.record_error(
+                self.state, ErrorType.TELEPORT_FAILED,
+                f"Teleport to {city} failed", module="navigation",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_waiting_for_teleport(self) -> None:
@@ -361,7 +412,11 @@ class MahoganyHomesBot:
             self.humanizer.walk_delay()
             self.state = BotState.SCANNING_HOTSPOTS
         else:
-            self.recovery.record_error(self.state, "floor_change_failed")
+            self.recovery.record_error(
+                self.state, ErrorType.FLOOR_CHANGE_FAILED,
+                "Could not find or use staircase", module="navigation",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_talking_to_homeowner(self) -> None:
@@ -384,7 +439,11 @@ class MahoganyHomesBot:
             self.dialogue.wait_for_dialogue(timeout=5.0)
             self.state = BotState.HANDLING_COMPLETION_DIALOGUE
         else:
-            self.recovery.record_error(self.state, "homeowner_not_found")
+            self.recovery.record_error(
+                self.state, ErrorType.NPC_NOT_FOUND,
+                "Homeowner NPC not visible after camera rotation", module="object_finder",
+                context=build_context(self),
+            )
             self.state = BotState.RECOVERING
 
     def _handle_completion_dialogue(self) -> None:

@@ -1,8 +1,14 @@
 """
-Session statistics tracking.
+Session statistics tracking with error aggregation.
 """
 import time
+import logging
 from dataclasses import dataclass, field
+from typing import Optional
+
+from bot.error_logger import ErrorTracker
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,9 +20,17 @@ class SessionStats:
     planks_used: int = 0
     steel_bars_used: int = 0
     bank_trips: int = 0
-    errors: int = 0
     hotspots_built: int = 0
     start_time: float = field(default_factory=time.time)
+
+    # Error tracker reference (set after init)
+    _error_tracker: Optional[ErrorTracker] = field(default=None, repr=False)
+
+    @property
+    def errors(self) -> int:
+        if self._error_tracker:
+            return self._error_tracker.total_errors
+        return 0
 
     @property
     def elapsed_seconds(self) -> float:
@@ -49,15 +63,14 @@ class SessionStats:
         self.contracts_completed += 1
         self.total_xp += xp
         self.total_points += points
+        logger.info(f"Contract #{self.contracts_completed} completed (+{xp} XP, +{points} pts)")
 
     def record_hotspot(self) -> None:
         self.hotspots_built += 1
 
     def record_bank_trip(self) -> None:
         self.bank_trips += 1
-
-    def record_error(self) -> None:
-        self.errors += 1
+        logger.debug(f"Bank trip #{self.bank_trips}")
 
     def summary(self) -> str:
         return (
@@ -67,3 +80,9 @@ class SessionStats:
             f"Points: {self.total_points} | "
             f"Errors: {self.errors}"
         )
+
+    def error_summary(self) -> str:
+        """Detailed error breakdown from the tracker."""
+        if self._error_tracker:
+            return self._error_tracker.session_summary()
+        return "No error tracker attached"
